@@ -18,6 +18,7 @@ import ConnectionRow from "./ConnectionRow";
 import AddApiKeyModal from "./AddApiKeyModal";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
+import BulkImportCodexModal from "./BulkImportCodexModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 const KIRO_BULK_JOB_STORAGE_KEY = "kiro-bulk-import-active-job";
@@ -85,6 +86,7 @@ export default function ProviderDetailPage() {
   const [showCodeBuddyQuotaCookieModal, setShowCodeBuddyQuotaCookieModal] = useState(false);
   const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
   const [addConnectionError, setAddConnectionError] = useState("");
+  const [showBulkImportCodex, setShowBulkImportCodex] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showEditNodeModal, setShowEditNodeModal] = useState(false);
   const [showBulkProxyModal, setShowBulkProxyModal] = useState(false);
@@ -1015,6 +1017,26 @@ export default function ProviderDetailPage() {
     });
   };
 
+  const handleDeleteSelectedConnections = () => {
+    if (selectedConnections.length === 0) return;
+    setConfirmState({
+      title: "Delete Selected Connections",
+      message: `Delete ${selectedConnections.length} selected connection(s)? This cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmState(null);
+        for (const conn of selectedConnections) {
+          try {
+            await fetch(`/api/providers/${conn.id}`, { method: "DELETE" });
+          } catch (error) {
+            console.log("Error deleting selected connection:", error);
+          }
+        }
+        clearSelection();
+        await fetchConnections();
+      },
+    });
+  };
+
   const isSelected = (connectionId) => effectiveSelectedConnectionIds.includes(connectionId);
 
   const totalConnectionPages = Math.max(1, Math.ceil(filteredConnections.length / connectionsPageSize));
@@ -1620,6 +1642,16 @@ export default function ProviderDetailPage() {
                     Clear
                   </Button>
                 )}
+                {selectedConnections.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon="delete"
+                    onClick={handleDeleteSelectedConnections}
+                  >
+                    Delete Selected ({selectedConnections.length})
+                  </Button>
+                )}
                 {terminalConnections.length > 0 && (
                   <Button
                     size="sm"
@@ -1855,6 +1887,18 @@ export default function ProviderDetailPage() {
                       Quota Cookie
                     </Button>
                   )}
+                  {providerId === "codex" && (
+                    <Button
+                      size="sm"
+                      icon="playlist_add"
+                      variant="secondary"
+                      onClick={() => setShowBulkImportCodex(true)}
+                      title={translate("Bulk import codex accounts from JSON")}
+                      className="w-full sm:w-auto"
+                    >
+                      {translate("Bulk Add")}
+                    </Button>
+                  )}
                   {hasDualAuthModes ? (
                     <>
                       <Button
@@ -2024,6 +2068,14 @@ export default function ProviderDetailPage() {
             setShowAddCustomModel(false);
           }}
           onClose={() => setShowAddCustomModel(false)}
+        />
+      )}
+
+      {providerId === "codex" && (
+        <BulkImportCodexModal
+          isOpen={showBulkImportCodex}
+          onClose={() => setShowBulkImportCodex(false)}
+          onSuccess={fetchConnections}
         />
       )}
 
