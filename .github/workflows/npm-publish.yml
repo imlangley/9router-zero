@@ -23,14 +23,23 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Install dependencies
+      - name: Install root dependencies
         run: npm install
+
+      - name: Install CLI dependencies
+        run: npm install
+        working-directory: ./cli
+
+      - name: Verify esbuild installation
+        run: node -e "console.log('esbuild:', require.resolve('esbuild'))"
+        working-directory: ./cli
 
       - name: Build Next.js app
         run: npm run build
 
       - name: Build CLI package
-        run: cd cli && node scripts/build-cli.js
+        run: node scripts/build-cli.js
+        working-directory: ./cli
 
       - name: Publish to npm
         run: cd cli && npm publish --access public --provenance
