@@ -124,8 +124,11 @@ function ensureSqliteRuntime({ silent = false } = {}) {
 function buildEnvWithRuntime(baseEnv = process.env) {
   const runtimeNm = getRuntimeNodeModules();
   const bundledNm = path.join(__dirname, "..", "app", "node_modules");
+  // Also check parent package node_modules (for npm global install where
+  // cli/app/node_modules is not shipped — deps live in root node_modules)
+  const parentNm = path.join(__dirname, "..", "..", "node_modules");
   const existing = baseEnv.NODE_PATH || "";
-  const NODE_PATH = [runtimeNm, bundledNm, existing].filter(Boolean).join(path.delimiter);
+  const NODE_PATH = [runtimeNm, bundledNm, parentNm, existing].filter(Boolean).join(path.delimiter);
   return { ...baseEnv, NODE_PATH };
 }
 

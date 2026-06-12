@@ -1,15 +1,37 @@
 {
-  "name": "9router-app",
-  "version": "0.4.71",
-  "description": "WYx0 fork of 9Router focused on Kiro/CodeBuddy automation and quota tracking",
-  "private": true,
+  "name": "wyxrouter",
+  "version": "0.4.72",
+  "description": "WYx0 fork of 9Router - AI Router with Kiro/CodeBuddy automation and quota tracking",
+  "bin": {
+    "wyxrouter": "./cli/cli.js"
+  },
+  "files": [
+    "cli/",
+    "src/",
+    "public/",
+    "scripts/",
+    "i18n/",
+    "assets/",
+    "images/",
+    "open-sse/",
+    "next.config.mjs",
+    "postcss.config.mjs",
+    "jsconfig.json",
+    "start.sh",
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "dev": "next dev --webpack --port 20128",
     "build": "next build --webpack",
     "start": "node ./scripts/start-standalone.mjs",
     "dev:bun": "bun --bun next dev --webpack --port 20128",
     "build:bun": "bun --bun next build --webpack",
-    "start:bun": "bun ./.next/standalone/server.js"
+    "start:bun": "bun ./.next/standalone/server.js",
+    "prepack": "echo 'Ensure cli/app is built before publishing: node cli/scripts/build-cli.js'",
+    "postinstall": "node cli/hooks/postinstall.js"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -54,5 +76,26 @@
     "eslint-config-next": "16.1.6",
     "postcss": "^8.5.6",
     "tailwindcss": "^4"
-  }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "ai",
+    "router",
+    "proxy",
+    "kiro",
+    "codebuddy",
+    "claude",
+    "openai",
+    "api",
+    "quota",
+    "automation"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wisyam/9router_wyx0"
+  },
+  "homepage": "https://9router.com"
 }

@@ -3,27 +3,50 @@ data/
 **/data/
 **/db.json
 
-# Development
-src/
+# Development only
 docs/
+tests/
 test/
 agents/
-scripts/
 worker/
 shared-sse/
 copilot-api/
 CLIProxyAPI/
+gitbook/
+skills/
 
-# Config files
+# Temp/build files
+.next/
+.next-cli-build/
+node_modules/
+*.tar
+codebuddy-model-*.json
+
+# Config files not needed at runtime
 *.md
 !README.md
+!CHANGELOG.md
 .gitignore
+.dockerignore
 .env*
-jsconfig.json
+!.env.example
 eslint.config.mjs
-postcss.config.mjs
-next.config.mjs
 tsconfig.json
+Dockerfile
+captain-definition
+DOCKER.md
+
+# IDE/editor
+.vscode/
+.cursor/
+.github/
+
+# Scripts not needed for npm users
+diagnose-kiro-account.mjs
+manager-import-test.mjs
+pw-test.mjs
+run-bulk-test.mjs
+repo.tar
 
 # Build artifacts that shouldn't be published
 .next/cache/

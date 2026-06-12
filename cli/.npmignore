@@ -1,9 +1,7 @@
-# Ignore everything except what's in package.json "files"
-*
-!cli.js
-!hooks/
-!app/
-!package.json
-!README.md
-!LICENSE
+# Development files not needed in published package
+node_modules/
+.build-home/
+scripts/
+.gitignore
+package-lock.json
 
