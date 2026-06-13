@@ -26,6 +26,292 @@ const CODEBUDDY_HOME_URL = "https://www.codebuddy.ai/home";
 const CODEBUDDY_PLAN_URL = "https://www.codebuddy.ai/profile/plan";
 const CODEBUDDY_TRIAL_ALREADY_APPLIED_CODE = 14051;
 
+function createCodeBuddyTrialResult() {
+  return {
+    success: false,
+    trialStatus: "failed",
+    billingOpened: false,
+    areaResolved: false,
+    accountUid: null,
+    sessionPrimed: false,
+    primingSteps: [],
+    trialResponse: null,
+    billingResponse: null,
+  };
+}
+
+function parseMaybeJson(text) {
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseNestedJsonData(json) {
+  if (!json || typeof json.data !== "string") return json?.data || null;
+  return parseMaybeJson(json.data) || json.data;
+}
+
+function buildCodeBuddyTrialHeaders(referer, includeDomain = false) {
+  return {
+    Accept: "application/json, text/plain, */*",
+    "Accept-Language": "en-GB,en;q=0.5",
+    "Content-Type": "application/json",
+    Origin: "https://www.codebuddy.ai",
+    Referer: referer,
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-GPC": "1",
+    "X-Requested-With": "XMLHttpRequest",
+    ...(includeDomain ? { "X-Domain": "www.codebuddy.ai" } : {}),
+  };
+}
+
+async function codeBuddyRequestJson(request, method, url, referer, body = undefined, includeDomain = false) {
+  const options = {
+    headers: buildCodeBuddyTrialHeaders(referer, includeDomain),
+    timeout: 30_000,
+  };
+  if (body !== undefined) {
+    options.data = body;
+  }
+
+  const response = method === "GET"
+    ? await request.get(url, options)
+    : await request.post(url, options);
+  const text = await response.text().catch(() => "");
+  return {
+    response,
+    text,
+    json: parseMaybeJson(text),
+  };
+}
+
+async function runCodeBuddyTrialSequenceWithRequest(request) {
+  const result = createCodeBuddyTrialResult();
+  const recordStep = (step, ok, payload = null) => {
+    result.primingSteps.push({ step, ok, payload });
+    return ok;
+  };
+
+  try {
+    const { response, json, text } = await codeBuddyRequestJson(
+      request,
+      "GET",
+      CODEBUDDY_ACCOUNTS_URL,
+      "https://www.codebuddy.ai/login/select",
+      undefined,
+      true
+    );
+    const accounts = Array.isArray(json?.data?.accounts) ? json.data.accounts : [];
+    const personalAccount = accounts.find((account) => account?.type === "personal") || accounts[0] || null;
+    result.accountUid = personalAccount?.uid || null;
+    recordStep("console_accounts", response.ok() && json?.code === 0 && Boolean(result.accountUid), {
+      code: json?.code,
+      uid: result.accountUid,
+      text: result.accountUid ? undefined : text.slice(0, 160),
+    });
+  } catch (error) {
+    recordStep("console_accounts", false, { error: error.message });
+  }
+
+  try {
+    const { response, json, text } = await codeBuddyRequestJson(
+      request,
+      "POST",
+      CODEBUDDY_ENTERPRISE_LOGIN_URL,
+      "https://www.codebuddy.ai/login/select",
+      "",
+      true
+    );
+    recordStep("enterprise_login", response.ok() && json?.code === 0, {
+      code: json?.code,
+      hasAccessToken: Boolean(json?.data?.accessToken),
+      text: json ? undefined : text.slice(0, 160),
+    });
+  } catch (error) {
+    recordStep("enterprise_login", false, { error: error.message });
+  }
+
+  if (result.accountUid) {
+    try {
+      const registerUrl = `https://www.codebuddy.ai/auth/realms/copilot/overseas/user/register?userId=${encodeURIComponent(result.accountUid)}`;
+      const { response, json, text } = await codeBuddyRequestJson(
+        request,
+        "GET",
+        registerUrl,
+        "https://www.codebuddy.ai/login/select"
+      );
+      recordStep("overseas_register", response.ok() && (json?.code === 200 || json?.code === 0), {
+        code: json?.code,
+        msg: json?.msg,
+        text: json ? undefined : text.slice(0, 160),
+      });
+    } catch (error) {
+      recordStep("overseas_register", false, { error: error.message });
+    }
+  } else {
+    recordStep("overseas_register", false, { error: "No account uid from /console/accounts" });
+  }
+
+  try {
+    const { response, json, text } = await codeBuddyRequestJson(
+      request,
+      "GET",
+      CODEBUDDY_LOGIN_TYPE_URL,
+      "https://www.codebuddy.ai/login/select"
+    );
+    recordStep("login_type_select", response.ok() && json?.code === 0, {
+      code: json?.code,
+      loginType: json?.data?.loginType,
+      userId: json?.data?.userId,
+      bindTencentCloudAccount: json?.data?.bindTencentCloudAccount,
+      text: json ? undefined : text.slice(0, 160),
+    });
+  } catch (error) {
+    recordStep("login_type_select", false, { error: error.message });
+  }
+
+  try {
+    const { response, json, text } = await codeBuddyRequestJson(
+      request,
+      "GET",
+      CODEBUDDY_GEOBLOCK_URL,
+      CODEBUDDY_PLAN_URL
+    );
+    recordStep("geoblock", response.ok() && json?.available !== false, {
+      available: json?.available,
+      countryCode: json?.country_code,
+      text: json ? undefined : text.slice(0, 160),
+    });
+  } catch (error) {
+    recordStep("geoblock", false, { error: error.message });
+  }
+
+  try {
+    const { response, json, text } = await codeBuddyRequestJson(
+      request,
+      "POST",
+      CODEBUDDY_COUNTRY_CODE_URL,
+      "https://www.codebuddy.ai/register/user/complete",
+      { filterForbidden: 1 }
+    );
+    const nested = parseNestedJsonData(json);
+    recordStep("country_code", response.ok() && json?.code === 0, {
+      code: json?.code,
+      nestedCode: nested?.code,
+      text: json ? undefined : text.slice(0, 160),
+    });
+  } catch (error) {
+    recordStep("country_code", false, { error: error.message });
+  }
+
+  try {
+    const { response, json, text } = await codeBuddyRequestJson(
+      request,
+      "POST",
+      CODEBUDDY_AREA_INFO_URL,
+      "https://www.codebuddy.ai/register/user/complete",
+      { action: "getUserAreaInfo" }
+    );
+    const nested = parseNestedJsonData(json);
+    result.areaResolved = response.ok() && json?.code === 0;
+    recordStep("user_area_info", result.areaResolved, {
+      code: json?.code,
+      nestedCode: nested?.code,
+      country: nested?.data?.country,
+      text: json ? undefined : text.slice(0, 160),
+    });
+  } catch (error) {
+    result.areaResolved = false;
+    recordStep("user_area_info", false, { error: error.message });
+  }
+
+  try {
+    const { response, json, text } = await codeBuddyRequestJson(
+      request,
+      "GET",
+      CODEBUDDY_LOGIN_TYPE_URL,
+      CODEBUDDY_HOME_URL
+    );
+    recordStep("login_type_home", response.ok() && json?.code === 0, {
+      code: json?.code,
+      loginType: json?.data?.loginType,
+      userId: json?.data?.userId,
+      bindTencentCloudAccount: json?.data?.bindTencentCloudAccount,
+      text: json ? undefined : text.slice(0, 160),
+    });
+  } catch (error) {
+    recordStep("login_type_home", false, { error: error.message });
+  }
+
+  result.sessionPrimed = result.primingSteps.some((step) => step.step === "overseas_register" && step.ok)
+    && result.primingSteps.some((step) => step.step === "login_type_home" && step.ok)
+    && result.areaResolved;
+
+  try {
+    const { response, json, text } = await codeBuddyRequestJson(
+      request,
+      "POST",
+      CODEBUDDY_TRIAL_URL,
+      CODEBUDDY_HOME_URL,
+      ""
+    );
+    result.trialResponse = json || text.slice(0, 200);
+    recordStep("trial", response.ok() && (json?.code === 0 || json?.code === CODEBUDDY_TRIAL_ALREADY_APPLIED_CODE), {
+      code: json?.code,
+      msg: json?.msg,
+      text: json ? undefined : text.slice(0, 160),
+    });
+
+    if (response.ok() && json?.code === 0) {
+      result.trialStatus = "activated";
+    } else if (json?.code === CODEBUDDY_TRIAL_ALREADY_APPLIED_CODE) {
+      result.trialStatus = "already_applied";
+    } else {
+      result.trialStatus = "failed";
+      result.error = `Trial activation failed (code=${json?.code}): ${json?.msg || text.slice(0, 200)}`;
+      return result;
+    }
+  } catch (error) {
+    result.trialStatus = "failed";
+    result.error = `Trial activation network error: ${error.message}`;
+    return result;
+  }
+
+  try {
+    const { response, json, text } = await codeBuddyRequestJson(
+      request,
+      "POST",
+      CODEBUDDY_BILLING_OPEN_URL,
+      CODEBUDDY_HOME_URL,
+      { IsAutoOpenAccount: 1 }
+    );
+    result.billingResponse = json || text.slice(0, 200);
+    const isOpen = Boolean(json?.data?.Response?.IsOpen);
+    result.billingOpened = response.ok() && json?.code === 0 && isOpen;
+    recordStep("billing_open", result.billingOpened, {
+      code: json?.code,
+      isOpen,
+      msg: json?.msg,
+      text: json ? undefined : text.slice(0, 160),
+    });
+
+    if (!result.billingOpened) {
+      result.error = result.error
+        || `Billing not opened (code=${json?.code}): ${json?.msg || text.slice(0, 200)}`;
+    }
+  } catch (error) {
+    result.error = result.error || `Billing open network error: ${error.message}`;
+  }
+
+  result.success = (result.trialStatus === "activated" || result.trialStatus === "already_applied")
+    && result.billingOpened;
+  return result;
+}
+
 /**
  * Generate a CodeBuddy API key using session cookies.
  *
@@ -254,17 +540,18 @@ export async function generateCodeBuddyApiKeyFromContext(context, options = {}) 
  * }>}
  */
 export async function applyCodeBuddyTrial(page) {
-  if (!page?.evaluate) {
+  if (!page) {
     return {
       success: false,
       trialStatus: "skipped",
       billingOpened: false,
       areaResolved: false,
-      error: "Playwright page.evaluate not available",
+      error: "Playwright page not available",
     };
   }
 
   try {
+    const context = typeof page.context === "function" ? page.context() : null;
     const currentUrl = page.url();
     if (!currentUrl.startsWith("https://www.codebuddy.ai/")) {
       await page.goto(CODEBUDDY_HOME_URL, {
@@ -289,6 +576,20 @@ export async function applyCodeBuddyTrial(page) {
       timeout: 30_000,
     }).catch(() => null);
     await page.waitForTimeout?.(1_000).catch(() => null);
+
+    if (context?.request?.get && context.request?.post) {
+      return await runCodeBuddyTrialSequenceWithRequest(context.request);
+    }
+
+    if (!page.evaluate) {
+      return {
+        success: false,
+        trialStatus: "skipped",
+        billingOpened: false,
+        areaResolved: false,
+        error: "Playwright page.evaluate not available",
+      };
+    }
 
     return await page.evaluate(async (urls) => {
       const TRIAL_ALREADY_APPLIED = 14051;
