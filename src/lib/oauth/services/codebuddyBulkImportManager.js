@@ -289,6 +289,21 @@ function formatTrialSuffix(apiKeyResult) {
   return ` (trial=${trial}, billing=${billing})`;
 }
 
+function summarizeCodeBuddyTrialFailure(trialDetails) {
+  if (!trialDetails) return "unknown trial failure";
+  if (trialDetails.error) return trialDetails.error;
+
+  const failedStep = Array.isArray(trialDetails.primingSteps)
+    ? trialDetails.primingSteps.find((step) => step && step.ok === false)
+    : null;
+  if (!failedStep) return "trial/billing did not become ready";
+
+  const payload = failedStep.payload || {};
+  const code = payload.code !== undefined ? ` code=${payload.code}` : "";
+  const msg = payload.msg || payload.error || payload.text || "not accepted";
+  return `${failedStep.step}${code}: ${msg}`;
+}
+
 export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
   constructor({
     browserLauncher,
@@ -404,6 +419,7 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
 
     const trialStatus = keyResult.trialStatus || "skipped";
     const billingOpened = Boolean(keyResult.billingOpened);
+    const trialFailureSummary = summarizeCodeBuddyTrialFailure(keyResult.trialDetails);
     account.trialStatus = trialStatus;
     account.billingOpened = billingOpened;
 
@@ -424,7 +440,7 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
       this.setAccountStep(
         account,
         "trial_failed",
-        `Trial activation failed${keyResult.trialError ? `: ${keyResult.trialError}` : ""} — API key may return code 14017 on chat`
+        `Trial activation failed: ${keyResult.trialError || trialFailureSummary} — API key may return code 14017 on chat`
       );
     }
     await this.persistJobSnapshot(job, { forcePreview: false });
@@ -462,6 +478,8 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         trialStatus,
         billingOpened,
         trialActivatedAt: trialReady ? new Date().toISOString() : null,
+        trialDetails: keyResult.trialDetails || null,
+        trialFailureSummary: trialReady && billingOpened ? null : trialFailureSummary,
         ...(webCookie
           ? {
               webCookie,

@@ -16,6 +16,11 @@ const DEFAULT_KEY_NAME_PREFIX = "9r";
 
 const CODEBUDDY_TRIAL_URL = "https://www.codebuddy.ai/billing/ide/trial";
 const CODEBUDDY_BILLING_OPEN_URL = "https://www.codebuddy.ai/billing/pay/get-billing-account-inner";
+const CODEBUDDY_ACCOUNTS_URL = "https://www.codebuddy.ai/console/accounts";
+const CODEBUDDY_ENTERPRISE_LOGIN_URL = "https://www.codebuddy.ai/console/login/enterprise?state=";
+const CODEBUDDY_LOGIN_TYPE_URL = "https://www.codebuddy.ai/console/login/type";
+const CODEBUDDY_GEOBLOCK_URL = "https://www.codebuddy.ai/v2/geoblock";
+const CODEBUDDY_COUNTRY_CODE_URL = "https://www.codebuddy.ai/billing/area/get-country-code";
 const CODEBUDDY_AREA_INFO_URL = "https://www.codebuddy.ai/billing/area/get-user-area-info";
 const CODEBUDDY_HOME_URL = "https://www.codebuddy.ai/home";
 const CODEBUDDY_TRIAL_ALREADY_APPLIED_CODE = 14051;
@@ -222,10 +227,17 @@ export async function generateCodeBuddyApiKeyFromContext(context, options = {}) 
 /**
  * Activate the CodeBuddy free trial for the currently logged-in account.
  *
- * Sequence (mirrors what the real browser does on /home hydration):
- *   1. POST /billing/area/get-user-area-info  -> resolves country from IP
- *   2. POST /billing/ide/trial                -> applies free trial (idempotent)
- *   3. POST /billing/pay/get-billing-account-inner {IsAutoOpenAccount:1} -> opens billing slot
+ * Sequence (mirrors the browser trace before /home activates trial):
+ *   1. GET  /console/accounts                  -> discover personal account uid
+ *   2. POST /console/login/enterprise?state=   -> establish console enterprise session
+ *   3. GET  /auth/.../overseas/user/register   -> register overseas user profile
+ *   4. GET  /console/login/type                -> hydrate login/bind state
+ *   5. GET  /v2/geoblock                       -> confirm region availability
+ *   6. POST /billing/area/get-country-code     -> prime allowed country list
+ *   7. POST /billing/area/get-user-area-info   -> resolve user country from IP
+ *   8. GET  /console/login/type                -> refresh login/bind state for /home
+ *   9. POST /billing/ide/trial                 -> applies free trial (idempotent)
+ *  10. POST /billing/pay/get-billing-account-inner {IsAutoOpenAccount:1} -> opens billing slot
  *
  * Returns rich status so callers can decide whether to issue an API key.
  *
@@ -267,56 +279,207 @@ export async function applyCodeBuddyTrial(page) {
         try { return { text, json: JSON.parse(text) }; }
         catch { return { text, json: null }; }
       };
+      const parseNestedJsonData = (json) => {
+        if (!json || typeof json.data !== "string") return json?.data || null;
+        try { return JSON.parse(json.data); }
+        catch { return json.data; }
+      };
+      const headers = (referer, includeDomain = false) => ({
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        Origin: "https://www.codebuddy.ai",
+        Referer: referer,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "X-Requested-With": "XMLHttpRequest",
+        ...(includeDomain ? { "X-Domain": "www.codebuddy.ai" } : {}),
+      });
+      const getJson = async (url, referer, includeDomain = false) => {
+        const response = await fetch(url, {
+          method: "GET",
+          credentials: "include",
+          headers: headers(referer, includeDomain),
+        });
+        const parsed = await safeJson(response);
+        return { response, ...parsed };
+      };
+      const postJson = async (url, referer, body, includeDomain = false) => {
+        const response = await fetch(url, {
+          method: "POST",
+          credentials: "include",
+          headers: headers(referer, includeDomain),
+          body: typeof body === "string" ? body : JSON.stringify(body),
+        });
+        const parsed = await safeJson(response);
+        return { response, ...parsed };
+      };
 
       const result = {
         success: false,
         trialStatus: "failed",
         billingOpened: false,
         areaResolved: false,
+        accountUid: null,
+        sessionPrimed: false,
+        primingSteps: [],
         trialResponse: null,
         billingResponse: null,
       };
 
-      // Step 1: resolve user area (best-effort; backend region pin)
+      const recordStep = (step, ok, payload = null) => {
+        result.primingSteps.push({ step, ok, payload });
+        return ok;
+      };
+
+      // Step 1: discover currently selected personal CodeBuddy account.
       try {
-        const areaRes = await fetch(urls.area, {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            Accept: "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            Origin: "https://www.codebuddy.ai",
-            Referer: "https://www.codebuddy.ai/register/user/complete",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-          },
-          body: JSON.stringify({ action: "getUserAreaInfo" }),
+        const { response, json, text } = await getJson(urls.accounts, "https://www.codebuddy.ai/login/select", true);
+        const accounts = Array.isArray(json?.data?.accounts) ? json.data.accounts : [];
+        const personalAccount = accounts.find((account) => account?.type === "personal") || accounts[0] || null;
+        result.accountUid = personalAccount?.uid || null;
+        recordStep("console_accounts", response.ok && json?.code === 0 && Boolean(result.accountUid), {
+          code: json?.code,
+          uid: result.accountUid,
+          text: result.accountUid ? undefined : text.slice(0, 160),
         });
-        const { json: areaJson } = await safeJson(areaRes);
-        result.areaResolved = areaRes.ok && areaJson?.code === 0;
-      } catch {
-        result.areaResolved = false;
+      } catch (error) {
+        recordStep("console_accounts", false, { error: error.message });
       }
 
-      // Step 2: apply trial (idempotent — 14051 means already applied)
+      // Step 2: establish the enterprise console session. This is best-effort;
+      // some sessions are already primed, but the real browser calls it before
+      // overseas registration.
       try {
-        const trialRes = await fetch(urls.trial, {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            Accept: "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            Origin: "https://www.codebuddy.ai",
-            Referer: "https://www.codebuddy.ai/home",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-          },
-          body: "",
+        const { response, json, text } = await postJson(
+          urls.enterpriseLogin,
+          "https://www.codebuddy.ai/login/select",
+          "",
+          true
+        );
+        recordStep("enterprise_login", response.ok && json?.code === 0, {
+          code: json?.code,
+          hasAccessToken: Boolean(json?.data?.accessToken),
+          text: json ? undefined : text.slice(0, 160),
         });
-        const { json: trialJson, text: trialText } = await safeJson(trialRes);
+      } catch (error) {
+        recordStep("enterprise_login", false, { error: error.message });
+      }
+
+      // Step 3: register overseas profile for the selected user id. The user's
+      // working trace shows this is the missing bridge between login/select and
+      // billing trial activation.
+      if (result.accountUid) {
+        try {
+          const registerUrl = `${urls.overseasRegisterBase}?userId=${encodeURIComponent(result.accountUid)}`;
+          const { response, json, text } = await getJson(registerUrl, "https://www.codebuddy.ai/login/select");
+          recordStep("overseas_register", response.ok && (json?.code === 200 || json?.code === 0), {
+            code: json?.code,
+            msg: json?.msg,
+            text: json ? undefined : text.slice(0, 160),
+          });
+        } catch (error) {
+          recordStep("overseas_register", false, { error: error.message });
+        }
+      } else {
+        recordStep("overseas_register", false, { error: "No account uid from /console/accounts" });
+      }
+
+      // Step 4: hydrate login type/bind state before touching billing.
+      try {
+        const { response, json, text } = await getJson(urls.loginType, "https://www.codebuddy.ai/login/select");
+        recordStep("login_type_select", response.ok && json?.code === 0, {
+          code: json?.code,
+          loginType: json?.data?.loginType,
+          userId: json?.data?.userId,
+          bindTencentCloudAccount: json?.data?.bindTencentCloudAccount,
+          text: json ? undefined : text.slice(0, 160),
+        });
+      } catch (error) {
+        recordStep("login_type_select", false, { error: error.message });
+      }
+
+      // Step 5: region availability. Do not fail early if this shape changes;
+      // preserve the evidence in primingSteps and let trial/billing decide.
+      try {
+        const { response, json, text } = await getJson(urls.geoblock, "https://www.codebuddy.ai/profile/plan");
+        recordStep("geoblock", response.ok && json?.available !== false, {
+          available: json?.available,
+          countryCode: json?.country_code,
+          text: json ? undefined : text.slice(0, 160),
+        });
+      } catch (error) {
+        recordStep("geoblock", false, { error: error.message });
+      }
+
+      // Step 6: prime allowed country list. The response nests JSON in data.
+      try {
+        const { response, json, text } = await postJson(
+          urls.countryCode,
+          "https://www.codebuddy.ai/register/user/complete",
+          { filterForbidden: 1 }
+        );
+        const nested = parseNestedJsonData(json);
+        recordStep("country_code", response.ok && json?.code === 0, {
+          code: json?.code,
+          nestedCode: nested?.code,
+          text: json ? undefined : text.slice(0, 160),
+        });
+      } catch (error) {
+        recordStep("country_code", false, { error: error.message });
+      }
+
+      // Step 7: resolve user area (best-effort; backend region pin)
+      try {
+        const { response, json, text } = await postJson(
+          urls.area,
+          "https://www.codebuddy.ai/register/user/complete",
+          { action: "getUserAreaInfo" }
+        );
+        const nested = parseNestedJsonData(json);
+        result.areaResolved = response.ok && json?.code === 0;
+        recordStep("user_area_info", result.areaResolved, {
+          code: json?.code,
+          nestedCode: nested?.code,
+          country: nested?.data?.country,
+          text: json ? undefined : text.slice(0, 160),
+        });
+      } catch (error) {
+        result.areaResolved = false;
+        recordStep("user_area_info", false, { error: error.message });
+      }
+
+      // Step 8: refresh login type after /home-style billing priming.
+      try {
+        const { response, json, text } = await getJson(urls.loginType, "https://www.codebuddy.ai/home");
+        recordStep("login_type_home", response.ok && json?.code === 0, {
+          code: json?.code,
+          loginType: json?.data?.loginType,
+          userId: json?.data?.userId,
+          bindTencentCloudAccount: json?.data?.bindTencentCloudAccount,
+          text: json ? undefined : text.slice(0, 160),
+        });
+      } catch (error) {
+        recordStep("login_type_home", false, { error: error.message });
+      }
+
+      result.sessionPrimed = result.primingSteps.some((step) => step.step === "overseas_register" && step.ok)
+        && result.primingSteps.some((step) => step.step === "login_type_home" && step.ok)
+        && result.areaResolved;
+
+      // Step 9: apply trial (idempotent — 14051 means already applied)
+      try {
+        const { response: trialRes, json: trialJson, text: trialText } = await postJson(
+          urls.trial,
+          "https://www.codebuddy.ai/home",
+          ""
+        );
         result.trialResponse = trialJson || trialText.slice(0, 200);
+        recordStep("trial", trialRes.ok && (trialJson?.code === 0 || trialJson?.code === TRIAL_ALREADY_APPLIED), {
+          code: trialJson?.code,
+          msg: trialJson?.msg,
+          text: trialJson ? undefined : trialText.slice(0, 160),
+        });
 
         if (trialRes.ok && trialJson?.code === 0) {
           result.trialStatus = "activated";
@@ -333,26 +496,22 @@ export async function applyCodeBuddyTrial(page) {
         return result;
       }
 
-      // Step 3: auto-open billing slot
+      // Step 10: auto-open billing slot
       try {
-        const billingRes = await fetch(urls.billing, {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            Accept: "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            Origin: "https://www.codebuddy.ai",
-            Referer: "https://www.codebuddy.ai/home",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-          },
-          body: JSON.stringify({ IsAutoOpenAccount: 1 }),
-        });
-        const { json: billingJson, text: billingText } = await safeJson(billingRes);
+        const { response: billingRes, json: billingJson, text: billingText } = await postJson(
+          urls.billing,
+          "https://www.codebuddy.ai/home",
+          { IsAutoOpenAccount: 1 }
+        );
         result.billingResponse = billingJson || billingText.slice(0, 200);
         const isOpen = Boolean(billingJson?.data?.Response?.IsOpen);
         result.billingOpened = billingRes.ok && billingJson?.code === 0 && isOpen;
+        recordStep("billing_open", result.billingOpened, {
+          code: billingJson?.code,
+          isOpen,
+          msg: billingJson?.msg,
+          text: billingJson ? undefined : billingText.slice(0, 160),
+        });
 
         if (!result.billingOpened) {
           result.error = result.error
@@ -366,6 +525,12 @@ export async function applyCodeBuddyTrial(page) {
         && result.billingOpened;
       return result;
     }, {
+      accounts: CODEBUDDY_ACCOUNTS_URL,
+      enterpriseLogin: CODEBUDDY_ENTERPRISE_LOGIN_URL,
+      overseasRegisterBase: "https://www.codebuddy.ai/auth/realms/copilot/overseas/user/register",
+      loginType: CODEBUDDY_LOGIN_TYPE_URL,
+      geoblock: CODEBUDDY_GEOBLOCK_URL,
+      countryCode: CODEBUDDY_COUNTRY_CODE_URL,
       area: CODEBUDDY_AREA_INFO_URL,
       trial: CODEBUDDY_TRIAL_URL,
       billing: CODEBUDDY_BILLING_OPEN_URL,
@@ -489,6 +654,7 @@ export async function generateCodeBuddyApiKeyFromPage(page, options = {}) {
       trialStatus: trialResult.trialStatus || "skipped",
       billingOpened: Boolean(trialResult.billingOpened),
       trialError: trialResult.error || null,
+      trialDetails: trialResult,
     };
   } catch (error) {
     return {
@@ -497,6 +663,7 @@ export async function generateCodeBuddyApiKeyFromPage(page, options = {}) {
       trialStatus: trialResult.trialStatus || "skipped",
       billingOpened: Boolean(trialResult.billingOpened),
       trialError: trialResult.error || null,
+      trialDetails: trialResult,
     };
   }
 }
