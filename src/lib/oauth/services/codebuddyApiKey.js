@@ -53,11 +53,10 @@ function parseNestedJsonData(json) {
   return parseMaybeJson(json.data) || json.data;
 }
 
-function buildCodeBuddyTrialHeaders(referer, includeDomain = false) {
-  return {
+function buildCodeBuddyTrialHeaders(referer, includeDomain = false, includeContentType = true) {
+  const headers = {
     Accept: "application/json, text/plain, */*",
     "Accept-Language": "en-GB,en;q=0.5",
-    "Content-Type": "application/json",
     Origin: "https://www.codebuddy.ai",
     Referer: referer,
     "Sec-Fetch-Dest": "empty",
@@ -67,14 +66,19 @@ function buildCodeBuddyTrialHeaders(referer, includeDomain = false) {
     "X-Requested-With": "XMLHttpRequest",
     ...(includeDomain ? { "X-Domain": "www.codebuddy.ai" } : {}),
   };
+  if (includeContentType) {
+    headers["Content-Type"] = "application/json";
+  }
+  return headers;
 }
 
 async function codeBuddyRequestJson(request, method, url, referer, body = undefined, includeDomain = false) {
+  const hasBody = body !== undefined && body !== null && body !== "";
   const options = {
-    headers: buildCodeBuddyTrialHeaders(referer, includeDomain),
+    headers: buildCodeBuddyTrialHeaders(referer, includeDomain, hasBody),
     timeout: 30_000,
   };
-  if (body !== undefined) {
+  if (hasBody) {
     options.data = body;
   }
 
@@ -257,7 +261,7 @@ async function runCodeBuddyTrialSequenceWithRequest(request) {
       "POST",
       CODEBUDDY_TRIAL_URL,
       CODEBUDDY_HOME_URL,
-      ""
+      undefined
     );
     result.trialResponse = json || text.slice(0, 200);
     recordStep("trial", response.ok() && (json?.code === 0 || json?.code === CODEBUDDY_TRIAL_ALREADY_APPLIED_CODE), {
