@@ -21,7 +21,110 @@ const CODEBUDDY_ALLOWED_REQUEST_FIELDS = [
   "tool_choice",
   "parallel_tool_calls",
   "response_format",
+  // Reasoning / thinking pass-through. Default off; honor whatever payload sends.
+  // Tencent CodeBuddy v2 chat API accepts standard OpenAI reasoning fields.
+  "reasoning_effort",
+  "reasoning",
+  "thinking",
+  "thinking_budget",
+  "enable_thinking",
+  "extra_body",
 ];
+
+const CODEBUDDY_VALID_REASONING_EFFORTS = new Set([
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
+// Map Anthropic-style thinking.budget_tokens -> CodeBuddy reasoning_effort tier.
+function mapThinkingBudgetToEffort(budgetTokens) {
+  const n = Number(budgetTokens);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n <= 2_000) return "low";
+  if (n <= 8_000) return "medium";
+  if (n <= 24_000) return "high";
+  return "xhigh";
+}
+
+// Normalize whatever thinking/reasoning fields the client sent into CodeBuddy-compatible
+// fields. Default OFF: if nothing is set, no thinking is enabled.
+function applyCodeBuddyThinking(body, transformed) {
+  const out = { ...body };
+
+  // Pass through reasoning_effort if explicit and valid; "auto" / unknown is dropped.
+  let effort = typeof transformed.reasoning_effort === "string"
+    ? transformed.reasoning_effort.toLowerCase()
+    : null;
+  if (effort === "auto" || effort === "") effort = null;
+  if (effort && !CODEBUDDY_VALID_REASONING_EFFORTS.has(effort)) effort = null;
+
+  // OpenAI Responses-style reasoning: { effort: "..." }.
+  if (!effort && transformed.reasoning && typeof transformed.reasoning === "object") {
+    const reasoningEffort = typeof transformed.reasoning.effort === "string"
+      ? transformed.reasoning.effort.toLowerCase()
+      : null;
+    if (reasoningEffort && CODEBUDDY_VALID_REASONING_EFFORTS.has(reasoningEffort)) {
+      effort = reasoningEffort;
+    }
+  }
+
+  // Anthropic-style thinking: { type: "enabled", budget_tokens }.
+  const thinking = transformed.thinking;
+  let thinkingEnabled = false;
+  let thinkingBudget = null;
+  if (thinking === true || transformed.enable_thinking === true) {
+    thinkingEnabled = true;
+  } else if (thinking && typeof thinking === "object" && !Array.isArray(thinking)) {
+    if (thinking.type === "enabled") thinkingEnabled = true;
+    if (thinking.type === "disabled") thinkingEnabled = false;
+    if (Number.isFinite(Number(thinking.budget_tokens))) {
+      thinkingBudget = Number(thinking.budget_tokens);
+    }
+  }
+
+  if (thinkingEnabled && !effort) {
+    effort = mapThinkingBudgetToEffort(thinkingBudget) || "medium";
+  }
+
+  // Apply normalized effort. "none" or null drops the field so the model defaults to off.
+  if (effort && effort !== "none") {
+    out.reasoning_effort = effort;
+  } else {
+    delete out.reasoning_effort;
+  }
+
+  // Drop incompatible fields we forwarded for inspection only.
+  delete out.reasoning;
+  delete out.thinking;
+  delete out.thinking_budget;
+  delete out.enable_thinking;
+
+  // extra_body passthrough for power users (e.g., MAX_THINKING_TOKENS bridges).
+  if (out.extra_body && typeof out.extra_body === "object") {
+    // Promote extra_body.reasoning_effort if no explicit effort was resolved.
+    if (!out.reasoning_effort && typeof out.extra_body.reasoning_effort === "string") {
+      const ebEffort = out.extra_body.reasoning_effort.toLowerCase();
+      if (CODEBUDDY_VALID_REASONING_EFFORTS.has(ebEffort) && ebEffort !== "none") {
+        out.reasoning_effort = ebEffort;
+      }
+    }
+    // Strip our internal helper fields from extra_body before send.
+    const cleaned = { ...out.extra_body };
+    delete cleaned.thinking;
+    delete cleaned.reasoning_effort;
+    if (Object.keys(cleaned).length > 0) {
+      out.extra_body = cleaned;
+    } else {
+      delete out.extra_body;
+    }
+  }
+
+  return out;
+}
 
 function codeBuddyRequestId() {
   return randomUUID().replace(/-/g, "");
@@ -130,7 +233,7 @@ function buildCodeBuddyBody(model, transformed, maxTokens, maxCompletionTokens) 
   } else if (Number.isFinite(maxCompletionTokens) && maxCompletionTokens > 0) {
     body.max_tokens = Math.max(maxCompletionTokens, CODEBUDDY_MIN_OUTPUT_TOKENS);
   }
-  return body;
+  return applyCodeBuddyThinking(body, transformed);
 }
 
 export class DefaultExecutor extends BaseExecutor {
@@ -283,7 +386,13 @@ export class DefaultExecutor extends BaseExecutor {
         } else if (this.provider === "codebuddy") {
           const requestId = codeBuddyRequestId();
           const conversationId = codeBuddyRequestId();
-          headers["Authorization"] = `Bearer ${credentials.apiKey || credentials.accessToken}`;
+          const codeBuddyToken = credentials.authType === "apikey"
+            ? (credentials.apiKey || credentials.accessToken)
+            : (credentials.accessToken || credentials.apiKey);
+          if (!codeBuddyToken) {
+            throw new Error("CodeBuddy credentials missing apiKey/accessToken");
+          }
+          headers["Authorization"] = `Bearer ${codeBuddyToken}`;
           headers["Accept"] = "text/event-stream";
           headers["Content-Type"] = "application/json; charset=utf-8";
           headers["User-Agent"] = "CLI/2.105.2 CodeBuddy/2.105.2";
