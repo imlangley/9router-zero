@@ -7,6 +7,21 @@ import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
 import { randomUUID } from "crypto";
 import { gzipSync } from "zlib";
+
+function parseCodeBuddyError(text) {
+  try {
+    const payload = JSON.parse(text);
+    const code = payload?.error?.data?.code || payload?.code;
+    const message = payload?.error?.data?.msg || payload?.error?.message || payload?.msg || payload?.message;
+    if (code === 14017) {
+      return "CodeBuddy trial is not activated yet. Log in to this CodeBuddy account once in the web/CLI account to activate the free trial, then test again.";
+    }
+    if (message) return `CodeBuddy error ${code || "unknown"}: ${message}`;
+  } catch {
+    // Fall through to raw text fallback.
+  }
+  return null;
+}
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -437,7 +452,8 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const text = await res.text().catch(() => "");
         if (res.status === 401) return { valid: false, error: "CodeBuddy API key invalid or revoked" };
         if (res.status === 403) return { valid: false, error: "CodeBuddy API key access denied" };
-        return { valid: false, error: `CodeBuddy test returned ${res.status}: ${text.slice(0, 180)}` };
+        const parsedError = parseCodeBuddyError(text);
+        return { valid: false, error: parsedError || `CodeBuddy test returned ${res.status}: ${text.slice(0, 180)}` };
       }
       case "cloudflare-ai": {
         const psd = connection.providerSpecificData || {};
