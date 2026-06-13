@@ -176,10 +176,77 @@ function CodeBuddyBulkTokenModal({ isOpen, onClose, onSuccess }) {
   );
 }
 
+function CodeBuddyBulkApiKeyModal({ isOpen, onClose, onSuccess }) {
+  const [keys, setKeys] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const handleImport = async () => {
+    if (!keys.trim()) return;
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/oauth/codebuddy/bulk-apikey", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keys }),
+      });
+      const data = await res.json();
+      setResult(data);
+      if (data.success) onSuccess?.();
+    } catch (error) {
+      setResult({ error: error.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  const successMsg = result?.success
+    ? `Imported ${result.imported}/${result.total} API keys.${result.failed ? ` ${result.failed} failed.` : ""}`
+    : null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-xl border border-border bg-surface p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <h3 className="mb-4 text-lg font-semibold text-text-main">CodeBuddy Bulk API Key Import</h3>
+        <p className="mb-3 text-xs text-text-muted">Paste API keys (ck_xxx), one per line. Each key will be imported as a CodeBuddy connection.</p>
+        <textarea
+          className="mb-3 w-full rounded-lg border border-border bg-background p-3 font-mono text-xs text-text-main placeholder:text-text-muted focus:border-primary focus:outline-none"
+          rows={8}
+          placeholder={"ck_abc123def456\nck_ghi789jkl012\nck_mno345pqr678"}
+          value={keys}
+          onChange={(e) => setKeys(e.target.value)}
+          disabled={loading}
+        />
+        {result && (
+          <div className={"mb-3 rounded-lg p-3 text-xs " + (result.success ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400")}>
+            {successMsg || result.error || "Import failed"}
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-text-muted hover:bg-border/50">Close</button>
+          <button
+            type="button"
+            onClick={handleImport}
+            disabled={loading || !keys.trim()}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90 disabled:opacity-50"
+          >
+            {loading ? "Importing..." : "Import API Keys"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
   const [isOpen, setIsOpen] = useState(false);
   const [isBulkOpen, setIsBulkOpen] = useState(false);
   const [isBulkTokenOpen, setIsBulkTokenOpen] = useState(false);
+  const [isBulkApiKeyOpen, setIsBulkApiKeyOpen] = useState(false);
+  const [isBulkApiKeyGenOpen, setIsBulkApiKeyGenOpen] = useState(false);
 
   return (
     <>
@@ -199,6 +266,19 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
         </button>
         <button
           type="button"
+          onClick={() => setIsBulkApiKeyGenOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">key</span>
+            Auto Login + API Key
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Same as Auto Login Bulk, but also generates a ck_xxx API key per account after OAuth login.
+          </span>
+        </button>
+        <button
+          type="button"
           onClick={() => setIsBulkTokenOpen(true)}
           className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
         >
@@ -208,6 +288,19 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
           </span>
           <span className="text-xs leading-relaxed text-text-muted">
             Paste multiple access tokens directly. No browser needed.
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setIsBulkApiKeyOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">vpn_key</span>
+            Bulk API Key Import
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Paste existing ck_xxx API keys directly. No browser needed.
           </span>
         </button>
         <button
@@ -229,13 +322,28 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
         onClose={() => setIsBulkTokenOpen(false)}
         onSuccess={onRefresh}
       />
+      <CodeBuddyBulkApiKeyModal
+        isOpen={isBulkApiKeyOpen}
+        onClose={() => setIsBulkApiKeyOpen(false)}
+        onSuccess={onRefresh}
+      />
       <BulkAccountAutomationModal
         isOpen={isBulkOpen}
         provider="codebuddy"
         title="CodeBuddy Bulk GSuite Login"
         serviceName="CodeBuddy"
+        generateApiKeys={false}
         onSuccess={onRefresh}
         onClose={() => setIsBulkOpen(false)}
+      />
+      <BulkAccountAutomationModal
+        isOpen={isBulkApiKeyGenOpen}
+        provider="codebuddy"
+        title="CodeBuddy Bulk Login + API Key Generation"
+        serviceName="CodeBuddy"
+        generateApiKeys={true}
+        onSuccess={onRefresh}
+        onClose={() => setIsBulkApiKeyGenOpen(false)}
       />
       <OAuthModal
         isOpen={isOpen}
@@ -264,8 +372,8 @@ const AUTOMATION_PROVIDERS = [
     id: "codebuddy",
     label: "CodeBuddy",
     icon: "smart_toy",
-    description: "Bulk GSuite automation and browser OAuth polling login.",
-    supportedModes: ["bulk-account", "device-oauth"],
+    description: "Bulk GSuite automation, API key generation, and device OAuth polling.",
+    supportedModes: ["bulk-account", "bulk-account+apikey", "bulk-token", "bulk-apikey", "device-oauth"],
     component: CodeBuddyAutomationPanel,
   },
 ];

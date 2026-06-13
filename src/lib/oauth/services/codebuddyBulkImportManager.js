@@ -14,6 +14,10 @@ import {
   handleCodeBuddyStartedAuthorization,
   isProviderPage,
 } from "./kiroGoogleAutomation.js";
+import {
+  generateCodeBuddyApiKeyFromContext,
+  isValidCodeBuddyApiKey,
+} from "./codebuddyApiKey.js";
 
 const CODEBUDDY_PROVIDER_ID = "codebuddy";
 const CODEBUDDY_LABEL = "CodeBuddy";
@@ -233,6 +237,7 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     pollToken = defaultPollForToken,
     saveConnection = defaultSaveCodeBuddyConnection,
     pollIntervalMs = CODEBUDDY_POLL_INTERVAL_MS,
+    generateApiKeys = false,
   } = {}) {
     super({
       browserLauncher,
@@ -243,6 +248,47 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     this.pollToken = pollToken;
     this.saveConnection = saveConnection;
     this.pollIntervalMs = pollIntervalMs;
+    this.generateApiKeys = generateApiKeys;
+  }
+
+  async _generateAndSaveApiKey(context, account, job, email) {
+    this.setAccountStep(account, "generating_api_key", "Generating CodeBuddy API key (ck_xxx)");
+    await this.persistJobSnapshot(job, { forcePreview: true });
+
+    const keyResult = await generateCodeBuddyApiKeyFromContext(context, {
+      name: `9r-${(email || "acct").split("@")[0].slice(0, 12)}-${Date.now().toString(36)}`,
+    });
+
+    if (!keyResult.success || !isValidCodeBuddyApiKey(keyResult.key)) {
+      this.setAccountStep(account, "api_key_failed", `API key generation failed: ${keyResult.error || "invalid key"}`);
+      await this.persistJobSnapshot(job, { forcePreview: false });
+      return null;
+    }
+
+    this.setAccountStep(account, "saving_api_key", `Saving API key ${keyResult.keyId}`);
+    await this.persistJobSnapshot(job, { forcePreview: true });
+
+    const { createProviderConnection } = await import("../../../models/index.js");
+    const apiConnection = await createProviderConnection({
+      provider: CODEBUDDY_PROVIDER_ID,
+      authType: "apikey",
+      accessToken: keyResult.key,
+      email,
+      providerSpecificData: {
+        domain: "www.codebuddy.ai",
+        loginEmail: email,
+        automation: "apikey-generated",
+        apiKeyId: keyResult.keyId,
+        apiKeyName: keyResult.name,
+        apiKeyExpiresAt: keyResult.expiresAt,
+        sourceOAuthConnectionId: account._oauthConnectionId || null,
+      },
+      testStatus: "active",
+    });
+
+    this.setAccountStep(account, "api_key_saved", `API key saved: ${keyResult.keyId}`);
+    await this.persistJobSnapshot(job, { forcePreview: false });
+    return { connectionId: apiConnection.id, keyId: keyResult.keyId, key: keyResult.key };
   }
 
   async runManualFollowup(job, account, workerId, context, successPromise) {
@@ -276,12 +322,27 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
           tokens: tokensWithCookie,
           email: account.email,
         });
+        account._oauthConnectionId = connection.id;
 
-        this.finalizeAccount(account, "success", {
-          connectionId: connection.id,
-          step: "connection_saved",
-          message: "CodeBuddy connection saved successfully",
-        });
+        // Generate ck_xxx API key if enabled (uses cookies from browser context)
+        if (this.generateApiKeys || job.generateApiKeys) {
+          const apiKeyResult = await this._generateAndSaveApiKey(context, account, job, account.email);
+          this.finalizeAccount(account, "success", {
+            connectionId: connection.id,
+            apiKeyConnectionId: apiKeyResult?.connectionId || null,
+            apiKeyId: apiKeyResult?.keyId || null,
+            step: "api_key_generated",
+            message: apiKeyResult
+              ? `OAuth + API key saved: ${apiKeyResult.keyId}`
+              : "OAuth connection saved (API key generation failed)",
+          });
+        } else {
+          this.finalizeAccount(account, "success", {
+            connectionId: connection.id,
+            step: "connection_saved",
+            message: "CodeBuddy connection saved successfully",
+          });
+        }
         await this.persistJobSnapshot(job, { forcePreview: true });
       } catch (error) {
         if (job.cancelRequested) {
@@ -372,11 +433,27 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
           tokens: tokensWithCookie,
           email: account.email,
         });
-        this.finalizeAccount(account, "success", {
-          connectionId: connection.id,
-          step: "connection_saved",
-          message: "CodeBuddy connection saved successfully",
-        });
+        account._oauthConnectionId = connection.id;
+
+        // Generate ck_xxx API key if enabled (uses cookies from browser context before closing)
+        if (this.generateApiKeys || job.generateApiKeys) {
+          const apiKeyResult = await this._generateAndSaveApiKey(context, account, job, account.email);
+          this.finalizeAccount(account, "success", {
+            connectionId: connection.id,
+            apiKeyConnectionId: apiKeyResult?.connectionId || null,
+            apiKeyId: apiKeyResult?.keyId || null,
+            step: apiKeyResult ? "api_key_generated" : "connection_saved",
+            message: apiKeyResult
+              ? `OAuth + API key saved: ${apiKeyResult.keyId}`
+              : "OAuth connection saved (API key generation failed)",
+          });
+        } else {
+          this.finalizeAccount(account, "success", {
+            connectionId: connection.id,
+            step: "connection_saved",
+            message: "CodeBuddy connection saved successfully",
+          });
+        }
         account.runtimeSession = null;
         await context.close().catch(() => null);
         await this.persistJobSnapshot(job, { forcePreview: true });

@@ -49,6 +49,12 @@ const APPROVE_BUTTON_SELECTORS = [
   'div[role="button"]:has-text("OK")',
   'div[role="button"]:has-text("Got it")',
   'div[role="button"]:has-text("I understand")',
+  'div[role="button"]:has-text("Understand")',
+  'button:has-text("Understand")',
+  '[role="button"][aria-label="I understand"]',
+  '[aria-label="I understand"]',
+  'input[type="button"][value="I understand"]',
+  'input[type="submit"][value="I understand"]',
   'input[type="button"][value="Saya mengerti"]',
   'input[type="submit"][value="Saya mengerti"]',
 ];
@@ -232,6 +238,9 @@ const GOOGLE_ONBOARDING_MARKERS = [
   "add recovery phone",
   "tambahkan nomor telepon pemulihan",
   "choose your settings",
+  "your administrator decides which google workspace",
+  "your organization administrator manages this account",
+  "i understand",
   "pilih setelan anda",
 ];
 

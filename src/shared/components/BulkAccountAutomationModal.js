@@ -62,6 +62,7 @@ export default function BulkAccountAutomationModal({
   provider,
   title,
   serviceName,
+  generateApiKeys = false,
 }) {
   const storageKey = `${provider}-bulk-import-active-job`;
   const completedRefreshJobsRef = useRef(new Set());
@@ -186,6 +187,7 @@ export default function BulkAccountAutomationModal({
         body: JSON.stringify({
           accounts: lines,
           concurrency: Number.parseInt(concurrency, 10) || DEFAULT_CONCURRENCY,
+          generateApiKeys: generateApiKeys || false,
         }),
       });
       const data = await res.json();
@@ -505,4 +507,5 @@ BulkAccountAutomationModal.propTypes = {
   provider: PropTypes.string.isRequired,
   title: PropTypes.string.isRequired,
   serviceName: PropTypes.string.isRequired,
+  generateApiKeys: PropTypes.bool,
 };

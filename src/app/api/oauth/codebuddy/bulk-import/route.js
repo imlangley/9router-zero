@@ -30,6 +30,7 @@ export async function POST(request) {
     const job = await manager.startJob({
       accounts,
       concurrency: body?.concurrency,
+      generateApiKeys: body?.generateApiKeys === true,
     });
 
     return NextResponse.json({
