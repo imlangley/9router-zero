@@ -171,6 +171,8 @@ function sanitizeAccount(account) {
     apiKeyId: account.apiKeyId || null,
     authMethod: account.authMethod || null,
     statusDetail: account.statusDetail || null,
+    loginProxyPoolId: account.loginProxyPoolId || null,
+    loginProxyPoolName: account.loginProxyPoolName || null,
     workerId: account.workerId || null,
     line: account.line,
     currentStep: account.currentStep || null,
@@ -261,13 +263,11 @@ function buildPlaywrightProxy(proxyUrl) {
   return proxy;
 }
 
-async function defaultBrowserLauncher({ proxyUrl } = {}) {
+async function defaultBrowserLauncher() {
   const { chromium } = await import("playwright");
-  const proxy = buildPlaywrightProxy(proxyUrl);
 
   return await chromium.launch({
     headless: true,
-    ...(proxy ? { proxy } : {}),
   });
 }
 
@@ -276,8 +276,11 @@ async function defaultSocialExchange(args) {
   return exchangeAndSaveKiroSocialConnection(args);
 }
 
-export async function createFreshContext(browser) {
-  const context = await browser.newContext();
+export async function createFreshContext(browser, options = {}) {
+  const proxy = buildPlaywrightProxy(options.proxyUrl);
+  const context = await browser.newContext({
+    ...(proxy ? { proxy } : {}),
+  });
   const page = await context.newPage();
   return { context, page };
 }
@@ -752,7 +755,7 @@ export class KiroBulkImportManager {
     if (!job) return;
 
     try {
-      job.browser = await this.browserLauncher({ proxyUrl: job.loginProxyUrl });
+      job.browser = await this.browserLauncher();
       job.accounts.forEach((account) => {
         if (account.status === "queued" && (account.logs || []).length === 1) {
           this.setAccountStep(account, "waiting_for_worker", "Waiting for a free worker");

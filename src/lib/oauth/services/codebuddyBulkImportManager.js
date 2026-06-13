@@ -127,17 +127,23 @@ async function attachCodeBuddyWebCookie(context, tokens = {}) {
   };
 }
 
-function attachLoginProxyMetadata(tokens = {}, job = null) {
-  const loginProxyUrl = typeof job?.loginProxyUrl === "string" ? job.loginProxyUrl.trim() : "";
-  if (!loginProxyUrl) return tokens;
+function getAccountLoginProxy(account = {}) {
+  return account.loginProxy || null;
+}
+
+function attachLoginProxyMetadata(tokens = {}, account = {}) {
+  const loginProxy = getAccountLoginProxy(account);
+  if (!loginProxy?.proxyUrl) return tokens;
 
   return {
     ...tokens,
     providerSpecificData: {
       ...(tokens.providerSpecificData || {}),
       connectionProxyEnabled: true,
-      connectionProxyUrl: loginProxyUrl,
-      loginProxyUrl,
+      connectionProxyUrl: loginProxy.proxyUrl,
+      proxyPoolId: loginProxy.id,
+      loginProxyPoolId: loginProxy.id,
+      loginProxyPoolName: loginProxy.name,
       loginProxyCapturedAt: new Date().toISOString(),
     },
   };
@@ -290,11 +296,33 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     this.generateApiKeys = generateApiKeys;
   }
 
-  async startJob({ accounts, concurrency, generateApiKeys, loginProxyUrl }) {
-    const job = await super.startJob({ accounts, concurrency, loginProxyUrl });
+  async startJob({ accounts, concurrency, generateApiKeys, loginProxyStrategy = "none", loginProxyPools = [] }) {
+    const job = await super.startJob({ accounts, concurrency });
     const internalJob = this.jobs.get(job.jobId) || job;
     if (generateApiKeys) {
       internalJob.generateApiKeys = true;
+    }
+    const usablePools = Array.isArray(loginProxyPools)
+      ? loginProxyPools.filter((pool) => pool?.id && pool?.proxyUrl)
+      : [];
+    internalJob.loginProxyStrategy = usablePools.length > 0 ? loginProxyStrategy : "none";
+    internalJob.loginProxyPools = usablePools;
+
+    if (usablePools.length > 0) {
+      internalJob.accounts.forEach((account, index) => {
+        const selectedPool = internalJob.loginProxyStrategy === "round-robin"
+          ? usablePools[index % usablePools.length]
+          : usablePools[0];
+        account.loginProxy = {
+          id: selectedPool.id,
+          name: selectedPool.name,
+          proxyUrl: selectedPool.proxyUrl,
+        };
+        account.loginProxyPoolId = selectedPool.id;
+        account.loginProxyPoolName = selectedPool.name;
+        this.setAccountStep(account, "login_proxy_assigned", `Login proxy assigned: ${selectedPool.name || selectedPool.id}`);
+      });
+      await this.persistJobSnapshot(internalJob, { forcePreview: true });
     }
 
     try {
@@ -352,7 +380,7 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
 
     const webCookie = await captureCodeBuddyWebCookie(context);
     const { createProviderConnection } = await import("../../../models/index.js");
-    const loginProxyUrl = typeof job?.loginProxyUrl === "string" ? job.loginProxyUrl.trim() : "";
+    const loginProxy = getAccountLoginProxy(account);
     const apiConnection = await createProviderConnection({
       provider: CODEBUDDY_PROVIDER_ID,
       authType: "apikey",
@@ -372,11 +400,13 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         apiKeyName: keyResult.name,
         apiKeyExpiresAt: keyResult.expiresAt,
         sourceOAuthConnectionId: account._oauthConnectionId || null,
-        ...(loginProxyUrl
+        ...(loginProxy?.proxyUrl
           ? {
               connectionProxyEnabled: true,
-              connectionProxyUrl: loginProxyUrl,
-              loginProxyUrl,
+              connectionProxyUrl: loginProxy.proxyUrl,
+              proxyPoolId: loginProxy.id,
+              loginProxyPoolId: loginProxy.id,
+              loginProxyPoolName: loginProxy.name,
               loginProxyCapturedAt: new Date().toISOString(),
             }
           : {}),
@@ -423,7 +453,7 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         await this.persistJobSnapshot(job, { forcePreview: true });
         const tokensWithCookie = attachLoginProxyMetadata(
           await attachCodeBuddyWebCookie(context, result.tokens),
-          job
+          account
         );
         const { connection } = await this.saveConnection({
           tokens: tokensWithCookie,
@@ -488,7 +518,8 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
       return;
     }
 
-    const { context, page } = await createFreshContext(job.browser);
+    const loginProxy = getAccountLoginProxy(account);
+    const { context, page } = await createFreshContext(job.browser, { proxyUrl: loginProxy?.proxyUrl });
     account.runtimeSession = { context, page };
 
     try {
@@ -541,7 +572,7 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         await this.persistJobSnapshot(job, { forcePreview: true });
         const tokensWithCookie = attachLoginProxyMetadata(
           await attachCodeBuddyWebCookie(context, automationResult.tokens),
-          job
+          account
         );
         const { connection } = await this.saveConnection({
           tokens: tokensWithCookie,
@@ -636,7 +667,7 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
           try {
             const tokensWithCookie = attachLoginProxyMetadata(
               await attachCodeBuddyWebCookie(context, pollResult.tokens),
-              job
+              account
             );
             const { connection } = await this.saveConnection({
               tokens: tokensWithCookie,
