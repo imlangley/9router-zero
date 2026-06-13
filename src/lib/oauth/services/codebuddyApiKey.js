@@ -131,12 +131,176 @@ export async function generateCodeBuddyApiKeyFromContext(context, options = {}) 
       .map((c) => `${c.name}=${c.value}`)
       .join("; ");
 
+    const {
+      name = `${DEFAULT_KEY_NAME_PREFIX}-${Date.now().toString(36)}`,
+      expireInDays = -1,
+      userEnterpriseId = CODEBUDDY_ENTERPRISE_ID,
+      domain = CODEBUDDY_DOMAIN,
+    } = options;
+
+    const body = {
+      name,
+      expire_in_days: expireInDays,
+      user_enterprise_id: userEnterpriseId,
+    };
+
+    // Prefer Playwright's APIRequestContext because it shares the same browser
+    // context cookie jar. Manual testing showed restricted accounts can still
+    // generate keys when replayed from the browser session, while Node fetch
+    // with a hand-built Cookie header may receive 401.
+    if (context.request?.post) {
+      const response = await context.request.post(CODEBUDDY_API_KEY_URL, {
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          "Accept-Language": "en-GB,en;q=0.5",
+          "Content-Type": "application/json",
+          Origin: `https://${domain}`,
+          Referer: `https://${domain}/profile/keys`,
+          "Sec-Fetch-Dest": "empty",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+          "Sec-GPC": "1",
+        },
+        data: body,
+        timeout: 30_000,
+      });
+
+      const text = await response.text().catch(() => "");
+      if (!response.ok()) {
+        return {
+          success: false,
+          error: `HTTP ${response.status()}: ${text.slice(0, 300)}`,
+          cookieString,
+        };
+      }
+
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return {
+          success: false,
+          error: `Invalid JSON response: ${text.slice(0, 300)}`,
+          cookieString,
+        };
+      }
+
+      if (data.code !== 0 || !data.data?.key) {
+        return {
+          success: false,
+          error: `API error (code=${data.code}): ${data.msg || JSON.stringify(data).slice(0, 300)}`,
+          cookieString,
+        };
+      }
+
+      return {
+        success: true,
+        key: data.data.key,
+        keyId: data.data.key_id,
+        expiresAt: data.data.expires_at,
+        name,
+        cookieString,
+      };
+    }
+
     const result = await generateCodeBuddyApiKey(cookieString, options);
     return { ...result, cookieString };
   } catch (error) {
     return {
       success: false,
       error: error.message || "Failed to extract cookies from context",
+    };
+  }
+}
+
+/**
+ * Generate a CodeBuddy API key from inside the active CodeBuddy page.
+ * This is closest to the manual DevTools/curl replay: browser origin,
+ * browser cookie jar, credentials: include, and same-origin fetch.
+ *
+ * @param {import('playwright').Page} page
+ * @param {object} [options]
+ * @returns {Promise<{success: boolean, key?: string, keyId?: string, expiresAt?: string, error?: string}>}
+ */
+export async function generateCodeBuddyApiKeyFromPage(page, options = {}) {
+  if (!page?.evaluate) {
+    return { success: false, error: "Playwright page.evaluate not available" };
+  }
+
+  const {
+    name = `${DEFAULT_KEY_NAME_PREFIX}-${Date.now().toString(36)}`,
+    expireInDays = -1,
+    userEnterpriseId = CODEBUDDY_ENTERPRISE_ID,
+  } = options;
+
+  try {
+    const currentUrl = page.url();
+    if (!currentUrl.startsWith("https://www.codebuddy.ai/")) {
+      await page.goto("https://www.codebuddy.ai/no-permission?errCode=12154", {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      }).catch(() => null);
+    }
+
+    return await page.evaluate(async ({ requestUrl, requestBody, keyName }) => {
+      const response = await fetch(requestUrl, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": "application/json",
+          "Sec-Fetch-Dest": "empty",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin",
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      const text = await response.text();
+      if (!response.ok) {
+        return {
+          success: false,
+          error: `HTTP ${response.status}: ${text.slice(0, 300)}`,
+        };
+      }
+
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return {
+          success: false,
+          error: `Invalid JSON response: ${text.slice(0, 300)}`,
+        };
+      }
+
+      if (data.code !== 0 || !data.data?.key) {
+        return {
+          success: false,
+          error: `API error (code=${data.code}): ${data.msg || JSON.stringify(data).slice(0, 300)}`,
+        };
+      }
+
+      return {
+        success: true,
+        key: data.data.key,
+        keyId: data.data.key_id,
+        expiresAt: data.data.expires_at,
+        name: keyName,
+      };
+    }, {
+      requestUrl: CODEBUDDY_API_KEY_URL,
+      requestBody: {
+        name,
+        expire_in_days: expireInDays,
+        user_enterprise_id: userEnterpriseId,
+      },
+      keyName: name,
+    });
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message || "Failed to generate API key from browser page",
     };
   }
 }

@@ -48,12 +48,18 @@ export async function POST(request) {
         const connection = await createProviderConnection({
           provider: CODEBUDDY_PROVIDER_ID,
           authType: "apikey",
+          name: `CodeBuddy API Key ${key.substring(0, 15)}...`,
+          apiKey: key,
           accessToken: key,
           email: `apikey-${key.substring(3, 15)}...`,
           providerSpecificData: {
             domain: CODEBUDDY_DOMAIN,
             loginEmail: null,
             automation: "bulk-apikey-import",
+            credentialKind: "codebuddy_api_key",
+            credentialSource: "manual_apikey_import",
+            routingAuthHeader: "bearer",
+            routingEndpoint: "https://www.codebuddy.ai/v2/chat/completions",
             apiKeyId: key.substring(3, 15),
             apiKeyName: "imported",
             apiKeyExpiresAt: "9999-12-30 00:00:00",

@@ -15,6 +15,7 @@ import {
   isProviderPage,
 } from "./kiroGoogleAutomation.js";
 import {
+  generateCodeBuddyApiKeyFromPage,
   generateCodeBuddyApiKeyFromContext,
   isValidCodeBuddyApiKey,
 } from "./codebuddyApiKey.js";
@@ -184,6 +185,18 @@ async function completeCodeBuddyRegistration(page, onStep) {
     await page.goto(CODEBUDDY_DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForTimeout(3_000);
 
+    // Detect /no-permission redirect (errCode=12154 = restricted account)
+    // This is a frontend-only block; cookies and OAuth tokens are still valid,
+    // so we log the restriction and continue — API key generation may still work.
+    const currentUrl = page.url();
+    if (currentUrl.includes("/no-permission") || currentUrl.includes("errCode=12154")) {
+      reportStep(
+        "account_restricted",
+        `Account restricted (errCode=12154) — frontend blocked, continuing to API key generation with captured cookies`
+      );
+      return;
+    }
+
     const startedAt = Date.now();
     let handledAnything = false;
     let loopCount = 0;
@@ -191,6 +204,16 @@ async function completeCodeBuddyRegistration(page, onStep) {
     while (Date.now() - startedAt < CODEBUDDY_COMPLETE_REGISTER_TIMEOUT_MS) {
       loopCount += 1;
       if (!isProviderPage(page)) break;
+
+      // Re-check for no-permission after navigation/handling
+      const loopUrl = page.url();
+      if (loopUrl.includes("/no-permission") || loopUrl.includes("errCode=12154")) {
+        reportStep(
+          "account_restricted",
+          `Account restricted (errCode=12154) — continuing to API key generation with captured cookies`
+        );
+        return;
+      }
 
       const handledStarted = await handleCodeBuddyStartedAuthorization(page, reportStep);
       if (handledStarted) {
@@ -251,13 +274,56 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     this.generateApiKeys = generateApiKeys;
   }
 
-  async _generateAndSaveApiKey(context, account, job, email) {
+  async startJob({ accounts, concurrency, generateApiKeys }) {
+    const job = await super.startJob({ accounts, concurrency });
+    const internalJob = this.jobs.get(job.jobId) || job;
+    if (generateApiKeys) {
+      internalJob.generateApiKeys = true;
+    }
+
+    try {
+      const { getProviderConnections } = await import("../../../models/index.js");
+      const allConnections = await getProviderConnections();
+      const existingEmails = new Set(
+        allConnections
+          .filter((c) => c?.provider === CODEBUDDY_PROVIDER_ID && c?.email)
+          .map((c) => String(c.email).trim().toLowerCase())
+      );
+
+      let skipped = 0;
+      for (const account of internalJob.accounts) {
+        if (account.status !== "queued") continue;
+        const emailKey = String(account.email || "").trim().toLowerCase();
+        if (emailKey && existingEmails.has(emailKey)) {
+          this.finalizeAccount(account, "skipped_duplicate", {
+            error: "Email already has a CodeBuddy connection",
+            step: "skipped_duplicate",
+            message: "Skipped: a CodeBuddy connection already exists for this email",
+          });
+          skipped += 1;
+        }
+      }
+
+      if (skipped > 0) {
+        await this.persistJobSnapshot(internalJob, { forcePreview: true });
+      }
+    } catch (error) {
+      console.warn("[CodeBuddyBulkImport] dedup pre-check failed:", error.message);
+    }
+
+    return job;
+  }
+
+  async _generateAndSaveApiKey(context, account, job, email, page = null) {
     this.setAccountStep(account, "generating_api_key", "Generating CodeBuddy API key (ck_xxx)");
     await this.persistJobSnapshot(job, { forcePreview: true });
 
-    const keyResult = await generateCodeBuddyApiKeyFromContext(context, {
+    const keyOptions = {
       name: `9r-${(email || "acct").split("@")[0].slice(0, 12)}-${Date.now().toString(36)}`,
-    });
+    };
+    const keyResult = page
+      ? await generateCodeBuddyApiKeyFromPage(page, keyOptions)
+      : await generateCodeBuddyApiKeyFromContext(context, keyOptions);
 
     if (!keyResult.success || !isValidCodeBuddyApiKey(keyResult.key)) {
       this.setAccountStep(account, "api_key_failed", `API key generation failed: ${keyResult.error || "invalid key"}`);
@@ -268,20 +334,33 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     this.setAccountStep(account, "saving_api_key", `Saving API key ${keyResult.keyId}`);
     await this.persistJobSnapshot(job, { forcePreview: true });
 
+    const webCookie = await captureCodeBuddyWebCookie(context);
     const { createProviderConnection } = await import("../../../models/index.js");
     const apiConnection = await createProviderConnection({
       provider: CODEBUDDY_PROVIDER_ID,
       authType: "apikey",
+      name: `CodeBuddy API Key ${keyResult.keyId}`,
+      apiKey: keyResult.key,
       accessToken: keyResult.key,
       email,
       providerSpecificData: {
         domain: "www.codebuddy.ai",
         loginEmail: email,
         automation: "apikey-generated",
+        credentialKind: "codebuddy_api_key",
+        credentialSource: account._oauthConnectionId ? "oauth_then_apikey" : "restricted_cookie_apikey",
+        routingAuthHeader: "bearer",
+        routingEndpoint: "https://www.codebuddy.ai/v2/chat/completions",
         apiKeyId: keyResult.keyId,
         apiKeyName: keyResult.name,
         apiKeyExpiresAt: keyResult.expiresAt,
         sourceOAuthConnectionId: account._oauthConnectionId || null,
+        ...(webCookie
+          ? {
+              webCookie,
+              webCookieCapturedAt: new Date().toISOString(),
+            }
+          : {}),
       },
       testStatus: "active",
     });
@@ -326,11 +405,13 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
 
         // Generate ck_xxx API key if enabled (uses cookies from browser context)
         if (this.generateApiKeys || job.generateApiKeys) {
-          const apiKeyResult = await this._generateAndSaveApiKey(context, account, job, account.email);
+          const apiKeyResult = await this._generateAndSaveApiKey(context, account, job, account.email, manualPage);
           this.finalizeAccount(account, "success", {
             connectionId: connection.id,
             apiKeyConnectionId: apiKeyResult?.connectionId || null,
             apiKeyId: apiKeyResult?.keyId || null,
+            authMethod: apiKeyResult ? "oauth_plus_apikey" : "oauth",
+            statusDetail: apiKeyResult ? "OAuth and API key saved" : "OAuth saved; API key generation failed",
             step: "api_key_generated",
             message: apiKeyResult
               ? `OAuth + API key saved: ${apiKeyResult.keyId}`
@@ -339,6 +420,8 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         } else {
           this.finalizeAccount(account, "success", {
             connectionId: connection.id,
+            authMethod: "oauth",
+            statusDetail: "OAuth connection saved",
             step: "connection_saved",
             message: "CodeBuddy connection saved successfully",
           });
@@ -437,11 +520,13 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
 
         // Generate ck_xxx API key if enabled (uses cookies from browser context before closing)
         if (this.generateApiKeys || job.generateApiKeys) {
-          const apiKeyResult = await this._generateAndSaveApiKey(context, account, job, account.email);
+          const apiKeyResult = await this._generateAndSaveApiKey(context, account, job, account.email, page);
           this.finalizeAccount(account, "success", {
             connectionId: connection.id,
             apiKeyConnectionId: apiKeyResult?.connectionId || null,
             apiKeyId: apiKeyResult?.keyId || null,
+            authMethod: apiKeyResult ? "oauth_plus_apikey" : "oauth",
+            statusDetail: apiKeyResult ? "OAuth and API key saved" : "OAuth saved; API key generation failed",
             step: apiKeyResult ? "api_key_generated" : "connection_saved",
             message: apiKeyResult
               ? `OAuth + API key saved: ${apiKeyResult.keyId}`
@@ -450,6 +535,8 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         } else {
           this.finalizeAccount(account, "success", {
             connectionId: connection.id,
+            authMethod: "oauth",
+            statusDetail: "OAuth connection saved",
             step: "connection_saved",
             message: "CodeBuddy connection saved successfully",
           });
@@ -476,6 +563,123 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         await this.persistJobSnapshot(job, { forcePreview: true });
         await this.runManualFollowup(job, account, workerId, context, successPromise);
         return;
+      }
+
+      // Special case: frontend shows /no-permission (errCode=12154) but Keycloak
+      // device-code polling may still succeed server-side. Wait a short timeout
+      // for successPromise — if it resolves, we can still save OAuth + API key
+      // using the cookies already captured in the browser context.
+      if (automationResult.status === "failed_restricted") {
+        const wantsApiKey = this.generateApiKeys || job.generateApiKeys;
+        const restrictedPollWaitMs = wantsApiKey ? 8_000 : 90_000;
+        this.setAccountStep(
+          account,
+          "frontend_restricted_waiting",
+          wantsApiKey
+            ? "Account blocked on CodeBuddy frontend (errCode=12154). Briefly checking OAuth, then using API key fallback..."
+            : "Account blocked on CodeBuddy frontend (errCode=12154). Waiting for server-side Keycloak polling to finish..."
+        );
+        await this.persistJobSnapshot(job, { forcePreview: true });
+
+        let pollResult = null;
+        try {
+          pollResult = await Promise.race([
+            successPromise,
+            wait(restrictedPollWaitMs).then(() => {
+              throw new Error(`Keycloak polling timed out (${Math.round(restrictedPollWaitMs / 1000)}s) after frontend restriction`);
+            }),
+          ]);
+        } catch (pollError) {
+          // Poll failed or timed out — fall through to finalize failed below
+          pollResult = null;
+        }
+
+        if (pollResult?.tokens) {
+          this.setAccountStep(
+            account,
+            "poll_succeeded_despite_restriction",
+            "Keycloak polling succeeded despite frontend restriction — saving connection"
+          );
+          await this.persistJobSnapshot(job, { forcePreview: true });
+
+          try {
+            const tokensWithCookie = await attachCodeBuddyWebCookie(context, pollResult.tokens);
+            const { connection } = await this.saveConnection({
+              tokens: tokensWithCookie,
+              email: account.email,
+            });
+            account._oauthConnectionId = connection.id;
+
+            if (this.generateApiKeys || job.generateApiKeys) {
+              const apiKeyResult = await this._generateAndSaveApiKey(context, account, job, account.email, page);
+              this.finalizeAccount(account, "success", {
+                connectionId: connection.id,
+                apiKeyConnectionId: apiKeyResult?.connectionId || null,
+                apiKeyId: apiKeyResult?.keyId || null,
+                authMethod: apiKeyResult ? "oauth_plus_apikey" : "oauth",
+                statusDetail: apiKeyResult ? "Restricted frontend; OAuth and API key saved" : "Restricted frontend; OAuth saved; API key generation failed",
+                step: apiKeyResult ? "api_key_generated" : "connection_saved",
+                message: apiKeyResult
+                  ? `Frontend restricted but polling succeeded — OAuth + API key: ${apiKeyResult.keyId}`
+                  : "Frontend restricted but polling succeeded — OAuth connection saved (API key failed)",
+              });
+            } else {
+              this.finalizeAccount(account, "success", {
+                connectionId: connection.id,
+                authMethod: "oauth",
+                statusDetail: "Restricted frontend; OAuth connection saved",
+                step: "connection_saved_despite_restriction",
+                message: "Frontend restricted but server-side polling succeeded — connection saved",
+              });
+            }
+            account.runtimeSession = null;
+            await context.close().catch(() => null);
+            await this.persistJobSnapshot(job, { forcePreview: true });
+            return;
+          } catch (saveError) {
+            // Fall through to finalize failed below
+            this.setAccountStep(account, "save_failed", `Save failed: ${saveError.message}`);
+          }
+        } else {
+          this.setAccountStep(
+            account,
+            "poll_failed_after_restriction",
+            "Keycloak polling failed or timed out after frontend restriction — trying cookie-only API key generation"
+          );
+          await this.persistJobSnapshot(job, { forcePreview: true });
+
+          if (wantsApiKey) {
+            const apiKeyResult = await this._generateAndSaveApiKey(context, account, job, account.email, page);
+
+            if (apiKeyResult) {
+              this.finalizeAccount(account, "success", {
+                connectionId: null,
+                apiKeyConnectionId: apiKeyResult.connectionId,
+                apiKeyId: apiKeyResult.keyId,
+                authMethod: "apikey",
+                statusDetail: "Restricted frontend; OAuth failed; API key saved",
+                step: "api_key_generated_without_oauth",
+                message: `Frontend restricted and OAuth polling failed, but API key was generated: ${apiKeyResult.keyId}`,
+              });
+              account.runtimeSession = null;
+              await context.close().catch(() => null);
+              await this.persistJobSnapshot(job, { forcePreview: true });
+              return;
+            }
+
+            this.finalizeAccount(account, "failed_restricted", {
+              error: "Frontend restricted; Keycloak polling failed; cookie-only API key generation failed.",
+              authMethod: "none",
+              statusDetail: "Restricted frontend; OAuth and API key generation failed",
+              step: "api_key_failed_after_restriction",
+              message: "Frontend restricted and OAuth polling failed; CodeBuddy API key endpoint also rejected the captured cookies.",
+            });
+            account.runtimeSession = null;
+            await context.close().catch(() => null);
+            await this.persistJobSnapshot(job, { forcePreview: true });
+            return;
+          }
+        }
       }
 
       this.finalizeAccount(account, automationResult.status || "failed", {

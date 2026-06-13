@@ -407,6 +407,26 @@ export default function BulkAccountAutomationModal({
                             <p className="mt-1 text-sm font-medium capitalize">{formatStepLabel(account.currentStep)}</p>
                           </div>
 
+                          {(account.authMethod || account.apiKeyId || account.statusDetail) && (
+                            <div className="mt-3 grid gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+                              {account.authMethod && (
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className="text-text-muted">Auth Method</span>
+                                  <span className="font-medium text-text-main">{formatStepLabel(account.authMethod)}</span>
+                                </div>
+                              )}
+                              {account.apiKeyId && (
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className="text-text-muted">API Key</span>
+                                  <span className="font-mono font-medium text-green-400">{account.apiKeyId}</span>
+                                </div>
+                              )}
+                              {account.statusDetail && (
+                                <p className="leading-relaxed text-text-muted">{account.statusDetail}</p>
+                              )}
+                            </div>
+                          )}
+
                           {account.error && (
                             <p className="mt-3 text-xs text-red-500">{account.error}</p>
                           )}

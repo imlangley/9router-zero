@@ -21,6 +21,9 @@ const TERMINAL_ACCOUNT_STATUSES = new Set([
 const MAX_ACCOUNT_LOG_ENTRIES = 40;
 const MAX_JOB_ACTIVITY_ENTRIES = 80;
 const PREVIEW_CAPTURE_INTERVAL_MS = 1500;
+const LARGE_JOB_PREVIEW_CAPTURE_INTERVAL_MS = 5000;
+const HUGE_JOB_PREVIEW_CAPTURE_INTERVAL_MS = 8000;
+const MIN_PERSIST_INTERVAL_MS = 500;
 const RECENT_TERMINAL_JOB_WINDOW_MS = 30 * 60_000;
 const KIRO_BULK_IMPORT_DIR = path.join(DATA_DIR, "kiro-bulk-import");
 const KIRO_BULK_IMPORT_META_FILE = path.join(KIRO_BULK_IMPORT_DIR, "meta.json");
@@ -164,6 +167,10 @@ function sanitizeAccount(account) {
     status: account.status,
     error: account.error || null,
     connectionId: account.connectionId || null,
+    apiKeyConnectionId: account.apiKeyConnectionId || null,
+    apiKeyId: account.apiKeyId || null,
+    authMethod: account.authMethod || null,
+    statusDetail: account.statusDetail || null,
     workerId: account.workerId || null,
     line: account.line,
     currentStep: account.currentStep || null,
@@ -201,6 +208,13 @@ function isRecentTerminalJob(job) {
   const finishedAtMs = job.finishedAt ? Date.parse(job.finishedAt) : NaN;
   if (!Number.isFinite(finishedAtMs)) return false;
   return (Date.now() - finishedAtMs) <= RECENT_TERMINAL_JOB_WINDOW_MS;
+}
+
+function getPreviewCaptureInterval(job) {
+  const total = job?.accounts?.length || 0;
+  if (total >= 300) return HUGE_JOB_PREVIEW_CAPTURE_INTERVAL_MS;
+  if (total >= 100) return LARGE_JOB_PREVIEW_CAPTURE_INTERVAL_MS;
+  return PREVIEW_CAPTURE_INTERVAL_MS;
 }
 
 export function buildLookupResponse(job, extras = {}) {
@@ -463,6 +477,10 @@ export class KiroBulkImportManager {
     account.status = status;
     account.error = extras.error || null;
     account.connectionId = extras.connectionId || null;
+    if (extras.apiKeyConnectionId !== undefined) account.apiKeyConnectionId = extras.apiKeyConnectionId || null;
+    if (extras.apiKeyId !== undefined) account.apiKeyId = extras.apiKeyId || null;
+    if (extras.authMethod !== undefined) account.authMethod = extras.authMethod || null;
+    if (extras.statusDetail !== undefined) account.statusDetail = extras.statusDetail || null;
     if (extras.step || extras.message) {
       appendAccountLog(
         account,
@@ -479,9 +497,14 @@ export class KiroBulkImportManager {
 
   async persistJobSnapshot(job, { forcePreview = false } = {}) {
     if (!job) return;
+    const now = Date.now();
+    if (!forcePreview && job.lastSnapshotWrittenAt && now - job.lastSnapshotWrittenAt < MIN_PERSIST_INTERVAL_MS) {
+      return;
+    }
 
     const runPersist = async () => {
-      const shouldCapturePreview = forcePreview || (Date.now() - (job.lastPreviewCapturedAt || 0) >= PREVIEW_CAPTURE_INTERVAL_MS);
+      const previewInterval = getPreviewCaptureInterval(job);
+      const shouldCapturePreview = Date.now() - (job.lastPreviewCapturedAt || 0) >= previewInterval;
       if (shouldCapturePreview) {
         const preview = await this.capturePreview(job);
         if (preview) {
@@ -491,6 +514,7 @@ export class KiroBulkImportManager {
       }
 
       writeJsonFile(getJobFile(job.jobId, this.storageDir), buildPersistedSnapshot(job));
+      job.lastSnapshotWrittenAt = Date.now();
     };
 
     job.persistPromise = Promise.resolve(job.persistPromise).catch(() => null).then(runPersist);
