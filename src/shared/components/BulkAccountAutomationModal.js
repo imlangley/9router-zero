@@ -65,14 +65,17 @@ export default function BulkAccountAutomationModal({
   generateApiKeys = false,
   allowLoginProxy = false,
 }) {
+  const NONE_PROXY_POOL_VALUE = "__none__";
+  const ROUND_ROBIN_PROXY_POOL_VALUE = "__round_robin__";
   const storageKey = `${provider}-bulk-import-active-job`;
   const bulkAccountsInputId = `${provider}-bulk-accounts-input`;
   const concurrencyInputId = `${provider}-bulk-concurrency-input`;
-  const loginProxyInputId = `${provider}-bulk-login-proxy-input`;
+  const loginProxyPoolInputId = `${provider}-bulk-login-proxy-pool-input`;
   const completedRefreshJobsRef = useRef(new Set());
   const [bulkText, setBulkText] = useState("");
   const [concurrency, setConcurrency] = useState(String(DEFAULT_CONCURRENCY));
-  const [loginProxyUrl, setLoginProxyUrl] = useState("");
+  const [loginProxyPoolId, setLoginProxyPoolId] = useState(NONE_PROXY_POOL_VALUE);
+  const [proxyPools, setProxyPools] = useState([]);
   const [activeJob, setActiveJob] = useState(null);
   const [error, setError] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -98,7 +101,7 @@ export default function BulkAccountAutomationModal({
   const resetState = useCallback(() => {
     setBulkText("");
     setConcurrency(String(DEFAULT_CONCURRENCY));
-    setLoginProxyUrl("");
+    setLoginProxyPoolId(NONE_PROXY_POOL_VALUE);
     setActiveJob(null);
     setError(null);
     setImporting(false);
@@ -148,6 +151,28 @@ export default function BulkAccountAutomationModal({
   }, [isOpen, provider, storageKey]);
 
   useEffect(() => {
+    if (!isOpen || !allowLoginProxy) return;
+
+    let cancelled = false;
+    const loadProxyPools = async () => {
+      try {
+        const res = await fetch("/api/proxy-pools?isActive=true", { cache: "no-store" });
+        const data = await res.json();
+        if (!cancelled && res.ok) {
+          setProxyPools((data.proxyPools || []).filter((pool) => pool.type === "http" && pool.proxyUrl));
+        }
+      } catch {
+        if (!cancelled) setProxyPools([]);
+      }
+    };
+
+    void loadProxyPools();
+    return () => {
+      cancelled = true;
+    };
+  }, [allowLoginProxy, isOpen]);
+
+  useEffect(() => {
     if (!isOpen || !activeJob?.jobId || finishedJob) return undefined;
 
     const interval = window.setInterval(async () => {
@@ -194,7 +219,7 @@ export default function BulkAccountAutomationModal({
           accounts: lines,
           concurrency: Number.parseInt(concurrency, 10) || DEFAULT_CONCURRENCY,
           generateApiKeys: generateApiKeys || false,
-          ...(allowLoginProxy && loginProxyUrl.trim() ? { loginProxyUrl: loginProxyUrl.trim() } : {}),
+          ...(allowLoginProxy && loginProxyPoolId !== NONE_PROXY_POOL_VALUE ? { loginProxyPoolId } : {}),
         }),
       });
       const data = await res.json();
@@ -303,16 +328,25 @@ export default function BulkAccountAutomationModal({
 
             {allowLoginProxy && (
               <div>
-                <label htmlFor={loginProxyInputId} className="mb-2 block text-sm font-medium">Login Proxy URL</label>
-                <Input
-                  id={loginProxyInputId}
-                  value={loginProxyUrl}
-                  onChange={(event) => setLoginProxyUrl(event.target.value)}
-                  placeholder="http://user:pass@host:port"
-                />
+                <label htmlFor={loginProxyPoolInputId} className="mb-2 block text-sm font-medium">Login Proxy Pool</label>
+                <select
+                  id={loginProxyPoolInputId}
+                  value={loginProxyPoolId}
+                  onChange={(event) => setLoginProxyPoolId(event.target.value)}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value={NONE_PROXY_POOL_VALUE}>None - use VPS IP</option>
+                  <option value={ROUND_ROBIN_PROXY_POOL_VALUE} disabled={proxyPools.length === 0}>Round-robin active HTTP pools</option>
+                  {proxyPools.map((pool) => (
+                    <option key={pool.id} value={pool.id}>{pool.name}</option>
+                  ))}
+                </select>
                 <p className="mt-1 text-xs text-text-muted">
-                  Optional but recommended for CodeBuddy bulk accounts on a VPS. The browser login, region activation, and generated API key will use this proxy and the saved connection will keep it for routing/tests.
+                  Recommended for CodeBuddy bulk accounts on a VPS. The browser login, region activation, and generated API key use the selected pool; round-robin assigns active HTTP pools across accounts.
                 </p>
+                {proxyPools.length === 0 && (
+                  <p className="mt-1 text-xs text-amber-500">No active HTTP proxy pools found. Add one in Proxy Pools first.</p>
+                )}
               </div>
             )}
           </>
