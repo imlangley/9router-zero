@@ -20,7 +20,8 @@ import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 
-const ONE_BY_ONE_DELAY_MS = 1000;
+const ONE_BY_ONE_DELAY_MS = 0;
+const ONE_BY_ONE_CONCURRENCY = 8;
 const KIRO_BULK_JOB_STORAGE_KEY = "kiro-bulk-import-active-job";
 const KIRO_BULK_JOB_EXPIRED_MESSAGE = "Bulk import progress expired or was cleared.";
 const CONNECTIONS_DEFAULT_PAGE_SIZE = 20;
@@ -674,68 +675,77 @@ export default function ProviderDetailPage() {
 
     let passed = 0;
     let failed = 0;
+    let completed = 0;
+    let stopped = false;
+    let nextIndex = 0;
 
-    try {
-      for (let index = 0; index < connections.length; index += 1) {
-        if (stopOneByOneRef.current) {
-          setOneByOneSummary({
-            total: connections.length,
-            completed: index,
-            passed,
-            failed,
-            stopped: true,
-          });
-          break;
-        }
+    const total = connections.length;
 
-        const connection = connections[index];
-        setOneByOneCurrentConnectionId(connection.id);
+    const updateSummary = () => {
+      setOneByOneSummary({
+        total,
+        completed,
+        passed,
+        failed,
+        stopped,
+      });
+    };
+
+    const runOne = async (connection) => {
+      setOneByOneCurrentConnectionId((prev) => prev || connection.id);
+      setOneByOneResults((prev) => ({
+        ...prev,
+        [connection.id]: { state: "testing", error: null },
+      }));
+
+      try {
+        const res = await fetch(`/api/providers/${connection.id}/test`, { method: "POST" });
+        const data = await res.json();
+        const valid = !!data.valid;
+
+        if (valid) passed += 1;
+        else failed += 1;
+
         setOneByOneResults((prev) => ({
           ...prev,
-          [connection.id]: { state: "testing", error: null },
+          [connection.id]: {
+            state: valid ? "success" : "failed",
+            error: valid ? null : (data.error || null),
+          },
         }));
-
-        try {
-          const res = await fetch(`/api/providers/${connection.id}/test`, { method: "POST" });
-          const data = await res.json();
-          const valid = !!data.valid;
-
-          if (valid) {
-            passed += 1;
-          } else {
-            failed += 1;
-          }
-
-          setOneByOneResults((prev) => ({
-            ...prev,
-            [connection.id]: {
-              state: valid ? "success" : "failed",
-              error: valid ? null : (data.error || null),
-            },
-          }));
-        } catch (error) {
-          failed += 1;
-          setOneByOneResults((prev) => ({
-            ...prev,
-            [connection.id]: {
-              state: "failed",
-              error: error.message || "Test failed",
-            },
-          }));
-        }
-
-        setOneByOneSummary({
-          total: connections.length,
-          completed: index + 1,
-          passed,
-          failed,
-          stopped: false,
-        });
-
-        if (index < connections.length - 1) {
-          await sleep(ONE_BY_ONE_DELAY_MS);
-        }
+      } catch (error) {
+        failed += 1;
+        setOneByOneResults((prev) => ({
+          ...prev,
+          [connection.id]: {
+            state: "failed",
+            error: error.message || "Test failed",
+          },
+        }));
+      } finally {
+        completed += 1;
+        updateSummary();
       }
+    };
+
+    const worker = async () => {
+      while (true) {
+        if (stopOneByOneRef.current) {
+          stopped = true;
+          return;
+        }
+        const myIndex = nextIndex;
+        if (myIndex >= total) return;
+        nextIndex += 1;
+        await runOne(connections[myIndex]);
+        if (ONE_BY_ONE_DELAY_MS > 0) await sleep(ONE_BY_ONE_DELAY_MS);
+      }
+    };
+
+    try {
+      const workerCount = Math.max(1, Math.min(ONE_BY_ONE_CONCURRENCY, total));
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      updateSummary();
     } finally {
       setOneByOneCurrentConnectionId(null);
       setOneByOneRunning(false);
@@ -942,9 +952,17 @@ export default function ProviderDetailPage() {
     return "Selected connections have mixed proxy bindings";
   })();
 
+  const getProxyTargetConnections = () => (
+    selectedConnections.length > 0 ? selectedConnections : filteredConnections
+  );
+
   const openBulkProxyModal = () => {
-    if (selectedConnections.length === 0) return;
-    const uniquePoolIds = [...new Set(selectedConnections.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"))];
+    const targets = getProxyTargetConnections();
+    if (targets.length === 0) {
+      alert("No connections available to apply proxy to.");
+      return;
+    }
+    const uniquePoolIds = [...new Set(targets.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"))];
     setBulkProxyPoolId(uniquePoolIds.length === 1 ? uniquePoolIds[0] : "__none__");
     setShowBulkProxyModal(true);
   };
@@ -980,7 +998,8 @@ export default function ProviderDetailPage() {
   };
 
   const handleApplySinglePool = (proxyPoolId) => {
-    const targets = selectedConnections.map((c) => ({ connectionId: c.id, proxyPoolId }));
+    const source = getProxyTargetConnections();
+    const targets = source.map((c) => ({ connectionId: c.id, proxyPoolId }));
     return applyProxyAssignments(targets);
   };
 
@@ -990,7 +1009,8 @@ export default function ProviderDetailPage() {
       alert("No active proxy pools available.");
       return;
     }
-    const targets = selectedConnections.map((c, i) => ({
+    const source = getProxyTargetConnections();
+    const targets = source.map((c, i) => ({
       connectionId: c.id,
       proxyPoolId: activePools[i % activePools.length].id,
     }));
@@ -1115,7 +1135,9 @@ export default function ProviderDetailPage() {
     <Modal
       isOpen={showBulkProxyModal}
       onClose={closeBulkProxyModal}
-      title={`Apply Proxy (${selectedConnections.length} selected)`}
+      title={selectedConnections.length > 0
+        ? `Apply Proxy (${selectedConnections.length} selected)`
+        : `Apply Proxy (all ${filteredConnections.length} on this view)`}
     >
       <div className="flex flex-col gap-3">
         <div className="flex flex-col">
@@ -1550,9 +1572,11 @@ export default function ProviderDetailPage() {
                   variant="secondary"
                   icon="lan"
                   onClick={openBulkProxyModal}
-                  disabled={selectedConnections.length === 0}
+                  title={selectedConnections.length === 0 ? "No selection — Apply Proxy will target all connections on this page" : `Apply Proxy to ${selectedConnections.length} selected`}
                 >
-                  Apply Proxy
+                  {selectedConnections.length === 0
+                    ? "Apply Proxy (All)"
+                    : `Apply Proxy (${selectedConnections.length})`}
                 </Button>
               )}
               {connections.length > 0 && (

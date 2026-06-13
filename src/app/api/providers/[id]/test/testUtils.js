@@ -5,6 +5,8 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { PROVIDER_ENDPOINTS } from "@/shared/constants/config";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
+import { randomUUID } from "crypto";
+import { gzipSync } from "zlib";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -395,6 +397,48 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
 
   try {
     switch (connection.provider) {
+      case "codebuddy": {
+        const token = connection.apiKey || connection.accessToken;
+        if (!token) return { valid: false, error: "Missing CodeBuddy API key" };
+        const requestId = randomUUID().replace(/-/g, "");
+        const conversationId = randomUUID().replace(/-/g, "");
+        const body = {
+          model: "default-model",
+          stream: true,
+          max_tokens: 16,
+          messages: [
+            { role: "system", content: "You are CodeBuddy Code." },
+            { role: "user", content: [{ type: "text", text: "Say OK." }] },
+          ],
+        };
+        const res = await fetchWithConnectionProxy("https://www.codebuddy.ai/v2/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "text/event-stream",
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Encoding": "gzip",
+            "User-Agent": "CLI/2.105.2 CodeBuddy/2.105.2",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-Domain": connection.providerSpecificData?.domain || "www.codebuddy.ai",
+            "X-Request-ID": requestId,
+            "X-Conversation-ID": conversationId,
+            "X-Conversation-Request-ID": conversationId,
+            "X-Conversation-Message-ID": requestId,
+            "X-Agent-Intent": "craft",
+            "X-IDE-Type": "CLI",
+            "X-IDE-Name": "CLI",
+            "X-IDE-Version": "2.105.2",
+            "X-Private-Data": "false",
+          },
+          body: gzipSync(JSON.stringify(body)),
+        }, effectiveProxy);
+        if (res.ok) return { valid: true, error: null };
+        const text = await res.text().catch(() => "");
+        if (res.status === 401) return { valid: false, error: "CodeBuddy API key invalid or revoked" };
+        if (res.status === 403) return { valid: false, error: "CodeBuddy API key access denied" };
+        return { valid: false, error: `CodeBuddy test returned ${res.status}: ${text.slice(0, 180)}` };
+      }
       case "cloudflare-ai": {
         const psd = connection.providerSpecificData || {};
         const accountId = psd.accountId;

@@ -202,8 +202,9 @@ export default function ProvidersPage() {
   }, []);
 
   const getProviderStats = (providerId, authType) => {
+    const acceptsCodeBuddyApiKey = providerId === "codebuddy" && (authType === "oauth" || authType === "free");
     const providerConnections = connections.filter(
-      (c) => c.provider === providerId && c.authType === authType,
+      (c) => c.provider === providerId && (c.authType === authType || (acceptsCodeBuddyApiKey && c.authType === "apikey")),
     );
 
     const getEffectiveStatus = (conn) => {
@@ -246,12 +247,13 @@ export default function ProvidersPage() {
 
   // Toggle all connections for a provider on/off
   const handleToggleProvider = async (providerId, authType, newActive) => {
+    const acceptsCodeBuddyApiKey = providerId === "codebuddy" && (authType === "oauth" || authType === "free");
     const providerConns = connections.filter(
-      (c) => c.provider === providerId && c.authType === authType,
+      (c) => c.provider === providerId && (c.authType === authType || (acceptsCodeBuddyApiKey && c.authType === "apikey")),
     );
     setConnections((prev) =>
       prev.map((c) =>
-        c.provider === providerId && c.authType === authType
+        c.provider === providerId && (c.authType === authType || (acceptsCodeBuddyApiKey && c.authType === "apikey"))
           ? { ...c, isActive: newActive }
           : c,
       ),
