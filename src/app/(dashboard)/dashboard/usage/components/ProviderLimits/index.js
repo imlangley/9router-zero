@@ -6,7 +6,7 @@ import QuotaTable from "./QuotaTable";
 import Toggle from "@/shared/components/Toggle";
 import { parseQuotaData, calculatePercentage } from "./utils";
 import Card from "@/shared/components/Card";
-import { EditConnectionModal } from "@/shared/components";
+import { EditConnectionModal, CodeBuddyQuotaCookieModal } from "@/shared/components";
 import {
   AI_PROVIDERS,
   USAGE_SUPPORTED_PROVIDERS,
@@ -332,6 +332,7 @@ export default function ProviderLimits() {
   const [togglingId, setTogglingId] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
+  const [codeBuddyCookieTarget, setCodeBuddyCookieTarget] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
   const [providerFilter, setProviderFilter] = useState("all");
   const [providerOptions, setProviderOptions] = useState([]);
@@ -457,6 +458,7 @@ export default function ProviderLimits() {
         quotas: parsedQuotas,
         plan: data.plan || null,
         message: data.message || null,
+        needsQuotaCookie: data.needsQuotaCookie === true,
         raw: data,
       };
 
@@ -1239,6 +1241,16 @@ export default function ProviderLimits() {
                 ) : quota?.message ? (
                   <div className="text-center py-5">
                     <p className="text-xs text-text-muted">{quota.message}</p>
+                    {quota.needsQuotaCookie && conn.provider === "codebuddy" && !isAggregate && (
+                      <button
+                        type="button"
+                        onClick={() => setCodeBuddyCookieTarget(conn.id)}
+                        className="mt-2 inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20"
+                      >
+                        <span className="material-symbols-outlined text-[14px]">cookie</span>
+                        Save Quota Cookie
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <QuotaTable
@@ -1388,6 +1400,20 @@ export default function ProviderLimits() {
           setShowEditModal(false);
           setSelectedConnection(null);
         }}
+      />
+
+      <CodeBuddyQuotaCookieModal
+        isOpen={Boolean(codeBuddyCookieTarget)}
+        connectionIds={codeBuddyCookieTarget ? [codeBuddyCookieTarget] : []}
+        onSuccess={() => {
+          const id = codeBuddyCookieTarget;
+          setCodeBuddyCookieTarget(null);
+          if (id) {
+            const conn = connections.find((c) => c.id === id);
+            if (conn) fetchQuota(id, conn.provider);
+          }
+        }}
+        onClose={() => setCodeBuddyCookieTarget(null)}
       />
     </div>
   );

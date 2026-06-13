@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById, updateProviderConnection } from "@/models";
 
-const CODEBUDDY_USAGE_URL = "https://www.codebuddy.ai/billing/meter/get-user-resource";
+const CODEBUDDY_USAGE_URLS = [
+  "https://www.codebuddy.ai/v2/billing/meter/get-user-resource",
+  "https://www.codebuddy.ai/billing/meter/get-user-resource",
+];
 const CODEBUDDY_PACKAGE_CODES = [
   "TCACA_code_001_PqouKr6QWV",
   "TCACA_code_002_AkiJS3ZHF5",
@@ -42,43 +45,50 @@ function normalizeCookie(cookie) {
 }
 
 async function probeCodeBuddyQuotaCookie(cookie) {
-  const response = await fetch(CODEBUDDY_USAGE_URL, {
-    method: "POST",
-    headers: {
-      Cookie: cookie,
-      Accept: "application/json, text/plain, */*",
-      "Content-Type": "application/json",
-      "User-Agent": "Mozilla/5.0",
-      "X-Requested-With": "XMLHttpRequest",
-      "X-Domain": "www.codebuddy.ai",
-      Origin: "https://www.codebuddy.ai",
-      Referer: "https://www.codebuddy.ai/profile/usage",
-    },
-    body: JSON.stringify(buildUsageBody()),
-  });
+  let lastFailure = null;
 
-  const text = await response.text();
-  let payload = null;
-  try {
-    payload = text ? JSON.parse(text) : null;
-  } catch {
-    payload = null;
+  for (const url of CODEBUDDY_USAGE_URLS) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Cookie: cookie,
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-Domain": "www.codebuddy.ai",
+        Origin: "https://www.codebuddy.ai",
+        Referer: "https://www.codebuddy.ai/profile/usage",
+      },
+      body: JSON.stringify(buildUsageBody()),
+    });
+
+    const text = await response.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      return { ok: false, status: response.status, error: "CodeBuddy cookie is not authorized for quota usage." };
+    }
+
+    if (!response.ok) {
+      lastFailure = { status: response.status, error: `CodeBuddy quota endpoint returned ${response.status}.` };
+      continue;
+    }
+
+    const accounts = payload?.Response?.Data?.Accounts || payload?.Accounts || payload?.data?.accounts || [];
+    return {
+      ok: true,
+      status: response.status,
+      accountCount: Array.isArray(accounts) ? accounts.length : 0,
+    };
   }
 
-  if (response.status === 401 || response.status === 403) {
-    return { ok: false, status: response.status, error: "CodeBuddy cookie is not authorized for quota usage." };
-  }
-
-  if (!response.ok) {
-    return { ok: false, status: response.status, error: `CodeBuddy quota endpoint returned ${response.status}.` };
-  }
-
-  const accounts = payload?.Response?.Data?.Accounts || payload?.Accounts || payload?.data?.accounts || [];
-  return {
-    ok: true,
-    status: response.status,
-    accountCount: Array.isArray(accounts) ? accounts.length : 0,
-  };
+  return { ok: false, ...(lastFailure || { status: 500, error: "CodeBuddy quota endpoint failed." }) };
 }
 
 export async function POST(request) {

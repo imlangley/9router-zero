@@ -59,6 +59,10 @@ const CLAUDE_CONFIG = {
 
 const CODEBUDDY_CONFIG = {
   usageUrl: "https://www.codebuddy.ai/v2/billing/meter/get-user-resource",
+  cookieUsagePaths: [
+    "/v2/billing/meter/get-user-resource",
+    "/billing/meter/get-user-resource",
+  ],
   productCode: "p_tcaca",
   packageCodes: {
     free: "TCACA_code_001_PqouKr6QWV",
@@ -149,8 +153,21 @@ async function fetchCodeBuddyUid(accessToken, providerSpecificData = {}, proxyOp
 }
 
 async function getCodeBuddyUsage(accessToken, providerSpecificData = {}, proxyOptions = null) {
+  if (providerSpecificData?.webCookie) {
+    return await getCodeBuddyUsageWithCookie(providerSpecificData.webCookie, providerSpecificData, proxyOptions);
+  }
+
+  if (typeof accessToken === "string" && accessToken.startsWith("ck_")) {
+    return {
+      plan: "CodeBuddy",
+      message: "Quota cookie not saved for this account.",
+      needsQuotaCookie: true,
+      quotas: {},
+    };
+  }
+
   if (!accessToken) {
-    return { plan: "CodeBuddy", message: "CodeBuddy access token not available.", quotas: {} };
+    return { plan: "CodeBuddy", message: "CodeBuddy access token or quota cookie not available.", quotas: {} };
   }
 
   try {
@@ -189,6 +206,72 @@ async function getCodeBuddyUsage(accessToken, providerSpecificData = {}, proxyOp
     return parseCodeBuddyUsage(payload);
   } catch (error) {
     return { plan: "CodeBuddy", message: `CodeBuddy connected. Unable to fetch quota: ${error.message}`, quotas: {} };
+  }
+}
+
+async function getCodeBuddyUsageWithCookie(webCookie, providerSpecificData = {}, proxyOptions = null) {
+  const domain = providerSpecificData?.domain || providerSpecificData?.rawAuth?.domain || "www.codebuddy.ai";
+  const cookie = String(webCookie || "")
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("; ");
+
+  if (!cookie) {
+    return { plan: "CodeBuddy", message: "CodeBuddy quota cookie is empty.", quotas: {} };
+  }
+
+  try {
+    let lastStatus = null;
+
+    for (const path of CODEBUDDY_CONFIG.cookieUsagePaths) {
+      const response = await proxyAwareFetch(`https://${domain}${path}`, {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": "application/json",
+          "User-Agent": "Mozilla/5.0",
+          "X-Requested-With": "XMLHttpRequest",
+          "X-Domain": domain,
+          Origin: `https://${domain}`,
+          Referer: `https://${domain}/profile/usage`,
+        },
+        body: JSON.stringify(buildCodeBuddyUsageBody()),
+      }, proxyOptions);
+
+      const rawText = await response.text();
+      let payload = null;
+      try {
+        payload = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        payload = null;
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        return {
+          plan: "CodeBuddy",
+          message: `Quota cookie expired (${response.status}). Re-save quota cookie.`,
+          needsQuotaCookie: true,
+          quotas: {},
+        };
+      }
+
+      if (!response.ok) {
+        lastStatus = response.status;
+        continue;
+      }
+
+      return parseCodeBuddyUsage(payload);
+    }
+
+    return {
+      plan: "CodeBuddy",
+      message: `CodeBuddy quota cookie endpoint returned ${lastStatus || "an error"}.`,
+      quotas: {},
+    };
+  } catch (error) {
+    return { plan: "CodeBuddy", message: `CodeBuddy connected. Unable to fetch quota with cookie: ${error.message}`, quotas: {} };
   }
 }
 
