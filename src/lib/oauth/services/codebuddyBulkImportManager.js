@@ -286,7 +286,12 @@ function formatTrialSuffix(apiKeyResult) {
   if (!apiKeyResult) return "";
   const trial = apiKeyResult.trialStatus || "skipped";
   const billing = apiKeyResult.billingOpened ? "open" : "closed";
-  return ` (trial=${trial}, billing=${billing})`;
+  const failure = apiKeyResult.trialFailureSummary
+    || summarizeCodeBuddyTrialFailure(apiKeyResult.trialDetails);
+  const needsFailure = trial !== "activated" && trial !== "already_applied" || !apiKeyResult.billingOpened;
+  return needsFailure
+    ? ` (trial=${trial}, billing=${billing}; ${failure})`
+    : ` (trial=${trial}, billing=${billing})`;
 }
 
 function summarizeCodeBuddyTrialFailure(trialDetails) {
@@ -509,6 +514,8 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
       key: keyResult.key,
       trialStatus,
       billingOpened,
+      trialDetails: keyResult.trialDetails || null,
+      trialFailureSummary: trialReady && billingOpened ? null : trialFailureSummary,
     };
   }
 

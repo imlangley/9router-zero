@@ -23,6 +23,7 @@ const CODEBUDDY_GEOBLOCK_URL = "https://www.codebuddy.ai/v2/geoblock";
 const CODEBUDDY_COUNTRY_CODE_URL = "https://www.codebuddy.ai/billing/area/get-country-code";
 const CODEBUDDY_AREA_INFO_URL = "https://www.codebuddy.ai/billing/area/get-user-area-info";
 const CODEBUDDY_HOME_URL = "https://www.codebuddy.ai/home";
+const CODEBUDDY_PLAN_URL = "https://www.codebuddy.ai/profile/plan";
 const CODEBUDDY_TRIAL_ALREADY_APPLIED_CODE = 14051;
 
 /**
@@ -271,6 +272,23 @@ export async function applyCodeBuddyTrial(page) {
         timeout: 30_000,
       }).catch(() => null);
     }
+
+    // The successful manual trace is not a pure background-fetch flow: the
+    // browser first lands on plan/home pages, which lets CodeBuddy set client
+    // runtime state before billing endpoints are accepted. Keep these
+    // navigations best-effort because restricted accounts may redirect to
+    // /no-permission while still keeping usable cookies for console requests.
+    await page.goto(CODEBUDDY_PLAN_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    }).catch(() => null);
+    await page.waitForTimeout?.(1_000).catch(() => null);
+
+    await page.goto(CODEBUDDY_HOME_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    }).catch(() => null);
+    await page.waitForTimeout?.(1_000).catch(() => null);
 
     return await page.evaluate(async (urls) => {
       const TRIAL_ALREADY_APPLIED = 14051;
