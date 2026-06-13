@@ -333,7 +333,6 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
         title="CodeBuddy Bulk GSuite Login"
         serviceName="CodeBuddy"
         generateApiKeys={false}
-        allowLoginProxy={true}
         onSuccess={onRefresh}
         onClose={() => setIsBulkOpen(false)}
       />
@@ -343,7 +342,6 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
         title="CodeBuddy Bulk Login + API Key Generation"
         serviceName="CodeBuddy"
         generateApiKeys={true}
-        allowLoginProxy={true}
         onSuccess={onRefresh}
         onClose={() => setIsBulkApiKeyGenOpen(false)}
       />

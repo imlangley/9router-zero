@@ -63,19 +63,11 @@ export default function BulkAccountAutomationModal({
   title,
   serviceName,
   generateApiKeys = false,
-  allowLoginProxy = false,
 }) {
-  const NONE_PROXY_POOL_VALUE = "__none__";
-  const ROUND_ROBIN_PROXY_POOL_VALUE = "__round_robin__";
   const storageKey = `${provider}-bulk-import-active-job`;
-  const bulkAccountsInputId = `${provider}-bulk-accounts-input`;
-  const concurrencyInputId = `${provider}-bulk-concurrency-input`;
-  const loginProxyPoolInputId = `${provider}-bulk-login-proxy-pool-input`;
   const completedRefreshJobsRef = useRef(new Set());
   const [bulkText, setBulkText] = useState("");
   const [concurrency, setConcurrency] = useState(String(DEFAULT_CONCURRENCY));
-  const [loginProxyPoolId, setLoginProxyPoolId] = useState(NONE_PROXY_POOL_VALUE);
-  const [proxyPools, setProxyPools] = useState([]);
   const [activeJob, setActiveJob] = useState(null);
   const [error, setError] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -98,20 +90,9 @@ export default function BulkAccountAutomationModal({
     [...(activeJob?.activity || [])].reverse()
   ), [activeJob]);
 
-  const browserCompatibleProxyPools = useMemo(
-    () => proxyPools.filter((pool) => pool.type === "http" && pool.proxyUrl),
-    [proxyPools]
-  );
-
-  const relayProxyPools = useMemo(
-    () => proxyPools.filter((pool) => pool.type !== "http" || !pool.proxyUrl),
-    [proxyPools]
-  );
-
   const resetState = useCallback(() => {
     setBulkText("");
     setConcurrency(String(DEFAULT_CONCURRENCY));
-    setLoginProxyPoolId(NONE_PROXY_POOL_VALUE);
     setActiveJob(null);
     setError(null);
     setImporting(false);
@@ -161,28 +142,6 @@ export default function BulkAccountAutomationModal({
   }, [isOpen, provider, storageKey]);
 
   useEffect(() => {
-    if (!isOpen || !allowLoginProxy) return;
-
-    let cancelled = false;
-    const loadProxyPools = async () => {
-      try {
-        const res = await fetch("/api/proxy-pools?isActive=true", { cache: "no-store" });
-        const data = await res.json();
-        if (!cancelled && res.ok) {
-          setProxyPools(data.proxyPools || []);
-        }
-      } catch {
-        if (!cancelled) setProxyPools([]);
-      }
-    };
-
-    void loadProxyPools();
-    return () => {
-      cancelled = true;
-    };
-  }, [allowLoginProxy, isOpen]);
-
-  useEffect(() => {
     if (!isOpen || !activeJob?.jobId || finishedJob) return undefined;
 
     const interval = window.setInterval(async () => {
@@ -229,7 +188,6 @@ export default function BulkAccountAutomationModal({
           accounts: lines,
           concurrency: Number.parseInt(concurrency, 10) || DEFAULT_CONCURRENCY,
           generateApiKeys: generateApiKeys || false,
-          ...(allowLoginProxy && loginProxyPoolId !== NONE_PROXY_POOL_VALUE ? { loginProxyPoolId } : {}),
         }),
       });
       const data = await res.json();
@@ -305,11 +263,10 @@ export default function BulkAccountAutomationModal({
             </div>
 
             <div>
-              <label htmlFor={bulkAccountsInputId} className="mb-2 block text-sm font-medium">
+              <label className="mb-2 block text-sm font-medium">
                 Bulk Accounts <span className="text-red-500">*</span>
               </label>
               <textarea
-                id={bulkAccountsInputId}
                 value={bulkText}
                 onChange={(event) => setBulkText(event.target.value)}
                 placeholder={"gmail1@example.com|password1\ngmail2@example.com|password2"}
@@ -321,9 +278,8 @@ export default function BulkAccountAutomationModal({
             </div>
 
             <div>
-              <label htmlFor={concurrencyInputId} className="mb-2 block text-sm font-medium">Concurrent Workers</label>
+              <label className="mb-2 block text-sm font-medium">Concurrent Workers</label>
               <Input
-                id={concurrencyInputId}
                 type="number"
                 min="1"
                 max="8"
@@ -335,42 +291,6 @@ export default function BulkAccountAutomationModal({
                 Default 4. Allowed range: 1 to 8 workers.
               </p>
             </div>
-
-            {allowLoginProxy && (
-              <div>
-                <label htmlFor={loginProxyPoolInputId} className="mb-2 block text-sm font-medium">Login Proxy Pool</label>
-                <select
-                  id={loginProxyPoolInputId}
-                  value={loginProxyPoolId}
-                  onChange={(event) => setLoginProxyPoolId(event.target.value)}
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                >
-                  <option value={NONE_PROXY_POOL_VALUE}>None - use VPS IP</option>
-                  <option value={ROUND_ROBIN_PROXY_POOL_VALUE} disabled={browserCompatibleProxyPools.length === 0}>Round-robin browser-compatible HTTP pools</option>
-                  {browserCompatibleProxyPools.map((pool) => (
-                    <option key={pool.id} value={pool.id}>{pool.name}</option>
-                  ))}
-                  {relayProxyPools.length > 0 && (
-                    <optgroup label="Not usable for browser login">
-                      {relayProxyPools.map((pool) => (
-                        <option key={pool.id} value={`disabled-${pool.id}`} disabled>
-                          {pool.name} ({pool.type || "unknown"} relay)
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                </select>
-                <p className="mt-1 text-xs text-text-muted">
-                  Recommended for CodeBuddy bulk accounts on a VPS. Browser login needs raw HTTP/SOCKS-style proxy pools; Vercel/Cloudflare/Deno relay pools are shown disabled because Playwright cannot use relay URLs as browser proxies.
-                </p>
-                <p className="mt-1 text-xs text-text-muted">
-                  Showing {browserCompatibleProxyPools.length} browser-compatible pool{browserCompatibleProxyPools.length === 1 ? "" : "s"} out of {proxyPools.length} active pool{proxyPools.length === 1 ? "" : "s"}.
-                </p>
-                {browserCompatibleProxyPools.length === 0 && (
-                  <p className="mt-1 text-xs text-amber-500">No active HTTP proxy pools found. Add one in Proxy Pools first.</p>
-                )}
-              </div>
-            )}
           </>
         )}
 
@@ -608,5 +528,4 @@ BulkAccountAutomationModal.propTypes = {
   title: PropTypes.string.isRequired,
   serviceName: PropTypes.string.isRequired,
   generateApiKeys: PropTypes.bool,
-  allowLoginProxy: PropTypes.bool,
 };

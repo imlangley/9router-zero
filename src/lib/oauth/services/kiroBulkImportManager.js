@@ -171,8 +171,6 @@ function sanitizeAccount(account) {
     apiKeyId: account.apiKeyId || null,
     authMethod: account.authMethod || null,
     statusDetail: account.statusDetail || null,
-    loginProxyPoolId: account.loginProxyPoolId || null,
-    loginProxyPoolName: account.loginProxyPoolName || null,
     workerId: account.workerId || null,
     line: account.line,
     currentStep: account.currentStep || null,
@@ -237,32 +235,6 @@ export function buildLookupResponse(job, extras = {}) {
   };
 }
 
-function normalizeString(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function buildPlaywrightProxy(proxyUrl) {
-  const trimmed = normalizeString(proxyUrl);
-  if (!trimmed) return null;
-
-  let parsed;
-  try {
-    parsed = new URL(trimmed);
-  } catch (error) {
-    throw new Error(`Invalid login proxy URL: ${error.message}`);
-  }
-
-  if (!parsed.protocol || !parsed.hostname) {
-    throw new Error("Invalid login proxy URL");
-  }
-
-  const server = `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}`;
-  const proxy = { server };
-  if (parsed.username) proxy.username = decodeURIComponent(parsed.username);
-  if (parsed.password) proxy.password = decodeURIComponent(parsed.password);
-  return proxy;
-}
-
 async function defaultBrowserLauncher() {
   const { chromium } = await import("playwright");
 
@@ -276,11 +248,8 @@ async function defaultSocialExchange(args) {
   return exchangeAndSaveKiroSocialConnection(args);
 }
 
-export async function createFreshContext(browser, options = {}) {
-  const proxy = buildPlaywrightProxy(options.proxyUrl);
-  const context = proxy
-    ? await browser.newContext({ proxy })
-    : await browser.newContext();
+export async function createFreshContext(browser) {
+  const context = await browser.newContext();
   const page = await context.newPage();
   return { context, page };
 }
@@ -347,7 +316,7 @@ export class KiroBulkImportManager {
     this.latestJobId = readPersistedLatestJobId(this.metaFile);
   }
 
-  async startJob({ accounts, concurrency, loginProxyUrl }) {
+  async startJob({ accounts, concurrency }) {
     const { parsed, invalidLines } = parseKiroBulkAccounts(accounts);
     if (!parsed.length) {
       const error = invalidLines.length > 0
@@ -375,7 +344,6 @@ export class KiroBulkImportManager {
       error: null,
       cancelRequested: false,
       browser: null,
-      loginProxyUrl: normalizeString(loginProxyUrl),
       nextIndex: 0,
       manualFollowups: new Set(),
       persistPromise: Promise.resolve(),
