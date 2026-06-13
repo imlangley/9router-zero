@@ -171,6 +171,8 @@ function sanitizeAccount(account) {
     apiKeyId: account.apiKeyId || null,
     authMethod: account.authMethod || null,
     statusDetail: account.statusDetail || null,
+    trialStatus: account.trialStatus || null,
+    billingOpened: account.billingOpened === true ? true : null,
     workerId: account.workerId || null,
     line: account.line,
     currentStep: account.currentStep || null,
@@ -481,6 +483,8 @@ export class KiroBulkImportManager {
     if (extras.apiKeyId !== undefined) account.apiKeyId = extras.apiKeyId || null;
     if (extras.authMethod !== undefined) account.authMethod = extras.authMethod || null;
     if (extras.statusDetail !== undefined) account.statusDetail = extras.statusDetail || null;
+    if (extras.trialStatus !== undefined) account.trialStatus = extras.trialStatus || null;
+    if (extras.billingOpened !== undefined) account.billingOpened = Boolean(extras.billingOpened);
     if (extras.step || extras.message) {
       appendAccountLog(
         account,

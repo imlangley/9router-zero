@@ -17,6 +17,7 @@ import {
 import {
   generateCodeBuddyApiKeyFromPage,
   generateCodeBuddyApiKeyFromContext,
+  deleteCodeBuddyApiKeyFromPage,
   isValidCodeBuddyApiKey,
 } from "./codebuddyApiKey.js";
 
@@ -26,6 +27,35 @@ const CODEBUDDY_POLL_TIMEOUT_MS = 15 * 60_000;
 const CODEBUDDY_POLL_INTERVAL_MS = 5_000;
 const CODEBUDDY_MAX_TRANSIENT_POLL_ERRORS = 6;
 const CODEBUDDY_COOKIE_DOMAINS = new Set(["codebuddy.ai", "www.codebuddy.ai"]);
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function isKnownGeneratedCodeBuddyApiKeyConnection(connection) {
+  if (!connection || connection.provider !== CODEBUDDY_PROVIDER_ID || connection.authType !== "apikey") {
+    return false;
+  }
+
+  const providerData = connection.providerSpecificData || {};
+  const keyId = providerData.apiKeyId || connection.apiKey || connection.accessToken || "";
+  const keyName = providerData.apiKeyName || connection.name || "";
+  return providerData.credentialKind === "codebuddy_api_key"
+    && providerData.automation === "apikey-generated"
+    && typeof keyId === "string"
+    && keyId.startsWith("ck_")
+    && typeof keyName === "string"
+    && keyName.startsWith("9r-");
+}
+
+function getKnownGeneratedCodeBuddyKeyId(connection) {
+  if (!isKnownGeneratedCodeBuddyApiKeyConnection(connection)) return null;
+  const providerData = connection.providerSpecificData || {};
+  const keyId = providerData.apiKeyId || connection.apiKey || connection.accessToken || "";
+  if (typeof keyId !== "string") return null;
+  const normalized = keyId.trim();
+  return normalized.startsWith("ck_") ? normalized : null;
+}
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -252,6 +282,13 @@ async function completeCodeBuddyRegistration(page, onStep) {
     reportStep("complete_register_skipped", `Could not complete registration: ${error.message}`);
   }
 }
+function formatTrialSuffix(apiKeyResult) {
+  if (!apiKeyResult) return "";
+  const trial = apiKeyResult.trialStatus || "skipped";
+  const billing = apiKeyResult.billingOpened ? "open" : "closed";
+  return ` (trial=${trial}, billing=${billing})`;
+}
+
 export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
   constructor({
     browserLauncher,
@@ -284,21 +321,41 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     try {
       const { getProviderConnections } = await import("../../../models/index.js");
       const allConnections = await getProviderConnections();
-      const existingEmails = new Set(
-        allConnections
-          .filter((c) => c?.provider === CODEBUDDY_PROVIDER_ID && c?.email)
-          .map((c) => String(c.email).trim().toLowerCase())
-      );
+      const connectionsByEmail = new Map();
+      for (const connection of allConnections) {
+        if (connection?.provider !== CODEBUDDY_PROVIDER_ID || !connection.email) continue;
+        const emailKey = normalizeEmail(connection.email);
+        if (!emailKey) continue;
+        const matches = connectionsByEmail.get(emailKey) || [];
+        matches.push(connection);
+        connectionsByEmail.set(emailKey, matches);
+      }
 
       let skipped = 0;
       for (const account of internalJob.accounts) {
         if (account.status !== "queued") continue;
-        const emailKey = String(account.email || "").trim().toLowerCase();
-        if (emailKey && existingEmails.has(emailKey)) {
+        const emailKey = normalizeEmail(account.email);
+        const existingConnections = emailKey ? connectionsByEmail.get(emailKey) || [] : [];
+        const replaceableConnections = existingConnections.filter(isKnownGeneratedCodeBuddyApiKeyConnection);
+        const blockingConnections = existingConnections.filter((connection) => !isKnownGeneratedCodeBuddyApiKeyConnection(connection));
+
+        if (replaceableConnections.length > 0) {
+          account._oldConnectionIds = replaceableConnections.map((connection) => connection.id).filter(Boolean);
+          account._oldApiKeyIds = replaceableConnections
+            .map(getKnownGeneratedCodeBuddyKeyId)
+            .filter(Boolean);
+          this.setAccountStep(
+            account,
+            "will_replace_generated_key",
+            `Existing 9Router-generated CodeBuddy key found; will replace ${account._oldApiKeyIds.length || account._oldConnectionIds.length} old key(s)`
+          );
+        }
+
+        if (emailKey && blockingConnections.length > 0) {
           this.finalizeAccount(account, "skipped_duplicate", {
             error: "Email already has a CodeBuddy connection",
             step: "skipped_duplicate",
-            message: "Skipped: a CodeBuddy connection already exists for this email",
+            message: "Skipped: a manual/OAuth CodeBuddy connection already exists for this email",
           });
           skipped += 1;
         }
@@ -315,7 +372,27 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
   }
 
   async _generateAndSaveApiKey(context, account, job, email, page = null) {
-    this.setAccountStep(account, "generating_api_key", "Generating CodeBuddy API key (ck_xxx)");
+    const oldApiKeyIds = Array.isArray(account._oldApiKeyIds) ? [...new Set(account._oldApiKeyIds)] : [];
+    if (page && oldApiKeyIds.length > 0) {
+      this.setAccountStep(account, "deleting_old_api_key", `Deleting ${oldApiKeyIds.length} old 9Router-generated CodeBuddy key(s)`);
+      await this.persistJobSnapshot(job, { forcePreview: true });
+
+      account.oldApiKeyDeleteResults = [];
+      for (const oldKeyId of oldApiKeyIds) {
+        const deleteResult = await deleteCodeBuddyApiKeyFromPage(page, oldKeyId);
+        account.oldApiKeyDeleteResults.push({ keyId: oldKeyId, ...deleteResult });
+        if (!deleteResult.success) {
+          this.setAccountStep(
+            account,
+            "old_api_key_delete_warning",
+            `Could not delete old CodeBuddy key ${oldKeyId}: ${deleteResult.error || "unknown error"}`
+          );
+          await this.persistJobSnapshot(job, { forcePreview: false });
+        }
+      }
+    }
+
+    this.setAccountStep(account, "activating_trial", "Activating CodeBuddy free trial + opening billing");
     await this.persistJobSnapshot(job, { forcePreview: true });
 
     const keyOptions = {
@@ -324,6 +401,33 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     const keyResult = page
       ? await generateCodeBuddyApiKeyFromPage(page, keyOptions)
       : await generateCodeBuddyApiKeyFromContext(context, keyOptions);
+
+    const trialStatus = keyResult.trialStatus || "skipped";
+    const billingOpened = Boolean(keyResult.billingOpened);
+    account.trialStatus = trialStatus;
+    account.billingOpened = billingOpened;
+
+    const trialReady = trialStatus === "activated" || trialStatus === "already_applied";
+    if (trialReady && billingOpened) {
+      this.setAccountStep(
+        account,
+        "trial_ready",
+        `Trial ${trialStatus.replace("_", " ")} and billing opened — generating API key`
+      );
+    } else if (trialReady && !billingOpened) {
+      this.setAccountStep(
+        account,
+        "trial_partial",
+        `Trial ${trialStatus.replace("_", " ")} but billing not opened${keyResult.trialError ? `: ${keyResult.trialError}` : ""}`
+      );
+    } else {
+      this.setAccountStep(
+        account,
+        "trial_failed",
+        `Trial activation failed${keyResult.trialError ? `: ${keyResult.trialError}` : ""} — API key may return code 14017 on chat`
+      );
+    }
+    await this.persistJobSnapshot(job, { forcePreview: false });
 
     if (!keyResult.success || !isValidCodeBuddyApiKey(keyResult.key)) {
       this.setAccountStep(account, "api_key_failed", `API key generation failed: ${keyResult.error || "invalid key"}`);
@@ -355,6 +459,9 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         apiKeyName: keyResult.name,
         apiKeyExpiresAt: keyResult.expiresAt,
         sourceOAuthConnectionId: account._oauthConnectionId || null,
+        trialStatus,
+        billingOpened,
+        trialActivatedAt: trialReady ? new Date().toISOString() : null,
         ...(webCookie
           ? {
               webCookie,
@@ -365,9 +472,26 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
       testStatus: "active",
     });
 
-    this.setAccountStep(account, "api_key_saved", `API key saved: ${keyResult.keyId}`);
+    const oldConnectionIds = Array.isArray(account._oldConnectionIds) ? [...new Set(account._oldConnectionIds)] : [];
+    if (oldConnectionIds.length > 0) {
+      const { deleteProviderConnection } = await import("../../../models/index.js");
+      account.oldConnectionDeleteResults = [];
+      for (const oldConnectionId of oldConnectionIds) {
+        if (!oldConnectionId || oldConnectionId === apiConnection.id) continue;
+        const deleted = await deleteProviderConnection(oldConnectionId);
+        account.oldConnectionDeleteResults.push({ connectionId: oldConnectionId, deleted });
+      }
+    }
+
+    this.setAccountStep(account, "api_key_saved", `API key saved: ${keyResult.keyId} (trial=${trialStatus}, billing=${billingOpened ? "open" : "closed"})`);
     await this.persistJobSnapshot(job, { forcePreview: false });
-    return { connectionId: apiConnection.id, keyId: keyResult.keyId, key: keyResult.key };
+    return {
+      connectionId: apiConnection.id,
+      keyId: keyResult.keyId,
+      key: keyResult.key,
+      trialStatus,
+      billingOpened,
+    };
   }
 
   async runManualFollowup(job, account, workerId, context, successPromise) {
@@ -411,10 +535,14 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
             apiKeyConnectionId: apiKeyResult?.connectionId || null,
             apiKeyId: apiKeyResult?.keyId || null,
             authMethod: apiKeyResult ? "oauth_plus_apikey" : "oauth",
-            statusDetail: apiKeyResult ? "OAuth and API key saved" : "OAuth saved; API key generation failed",
+            trialStatus: apiKeyResult?.trialStatus || null,
+            billingOpened: Boolean(apiKeyResult?.billingOpened),
+            statusDetail: apiKeyResult
+              ? `OAuth and API key saved${formatTrialSuffix(apiKeyResult)}`
+              : "OAuth saved; API key generation failed",
             step: "api_key_generated",
             message: apiKeyResult
-              ? `OAuth + API key saved: ${apiKeyResult.keyId}`
+              ? `OAuth + API key saved: ${apiKeyResult.keyId}${formatTrialSuffix(apiKeyResult)}`
               : "OAuth connection saved (API key generation failed)",
           });
         } else {
@@ -526,10 +654,14 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
             apiKeyConnectionId: apiKeyResult?.connectionId || null,
             apiKeyId: apiKeyResult?.keyId || null,
             authMethod: apiKeyResult ? "oauth_plus_apikey" : "oauth",
-            statusDetail: apiKeyResult ? "OAuth and API key saved" : "OAuth saved; API key generation failed",
+            trialStatus: apiKeyResult?.trialStatus || null,
+            billingOpened: Boolean(apiKeyResult?.billingOpened),
+            statusDetail: apiKeyResult
+              ? `OAuth and API key saved${formatTrialSuffix(apiKeyResult)}`
+              : "OAuth saved; API key generation failed",
             step: apiKeyResult ? "api_key_generated" : "connection_saved",
             message: apiKeyResult
-              ? `OAuth + API key saved: ${apiKeyResult.keyId}`
+              ? `OAuth + API key saved: ${apiKeyResult.keyId}${formatTrialSuffix(apiKeyResult)}`
               : "OAuth connection saved (API key generation failed)",
           });
         } else {
@@ -617,10 +749,14 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
                 apiKeyConnectionId: apiKeyResult?.connectionId || null,
                 apiKeyId: apiKeyResult?.keyId || null,
                 authMethod: apiKeyResult ? "oauth_plus_apikey" : "oauth",
-                statusDetail: apiKeyResult ? "Restricted frontend; OAuth and API key saved" : "Restricted frontend; OAuth saved; API key generation failed",
+                trialStatus: apiKeyResult?.trialStatus || null,
+                billingOpened: Boolean(apiKeyResult?.billingOpened),
+                statusDetail: apiKeyResult
+                  ? `Restricted frontend; OAuth and API key saved${formatTrialSuffix(apiKeyResult)}`
+                  : "Restricted frontend; OAuth saved; API key generation failed",
                 step: apiKeyResult ? "api_key_generated" : "connection_saved",
                 message: apiKeyResult
-                  ? `Frontend restricted but polling succeeded — OAuth + API key: ${apiKeyResult.keyId}`
+                  ? `Frontend restricted but polling succeeded — OAuth + API key: ${apiKeyResult.keyId}${formatTrialSuffix(apiKeyResult)}`
                   : "Frontend restricted but polling succeeded — OAuth connection saved (API key failed)",
               });
             } else {
@@ -657,9 +793,11 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
                 apiKeyConnectionId: apiKeyResult.connectionId,
                 apiKeyId: apiKeyResult.keyId,
                 authMethod: "apikey",
-                statusDetail: "Restricted frontend; OAuth failed; API key saved",
+                trialStatus: apiKeyResult.trialStatus || null,
+                billingOpened: Boolean(apiKeyResult.billingOpened),
+                statusDetail: `Restricted frontend; OAuth failed; API key saved${formatTrialSuffix(apiKeyResult)}`,
                 step: "api_key_generated_without_oauth",
-                message: `Frontend restricted and OAuth polling failed, but API key was generated: ${apiKeyResult.keyId}`,
+                message: `Frontend restricted and OAuth polling failed, but API key was generated: ${apiKeyResult.keyId}${formatTrialSuffix(apiKeyResult)}`,
               });
               account.runtimeSession = null;
               await context.close().catch(() => null);
