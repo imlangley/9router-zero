@@ -63,11 +63,16 @@ export default function BulkAccountAutomationModal({
   title,
   serviceName,
   generateApiKeys = false,
+  allowLoginProxy = false,
 }) {
   const storageKey = `${provider}-bulk-import-active-job`;
+  const bulkAccountsInputId = `${provider}-bulk-accounts-input`;
+  const concurrencyInputId = `${provider}-bulk-concurrency-input`;
+  const loginProxyInputId = `${provider}-bulk-login-proxy-input`;
   const completedRefreshJobsRef = useRef(new Set());
   const [bulkText, setBulkText] = useState("");
   const [concurrency, setConcurrency] = useState(String(DEFAULT_CONCURRENCY));
+  const [loginProxyUrl, setLoginProxyUrl] = useState("");
   const [activeJob, setActiveJob] = useState(null);
   const [error, setError] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -93,6 +98,7 @@ export default function BulkAccountAutomationModal({
   const resetState = useCallback(() => {
     setBulkText("");
     setConcurrency(String(DEFAULT_CONCURRENCY));
+    setLoginProxyUrl("");
     setActiveJob(null);
     setError(null);
     setImporting(false);
@@ -188,6 +194,7 @@ export default function BulkAccountAutomationModal({
           accounts: lines,
           concurrency: Number.parseInt(concurrency, 10) || DEFAULT_CONCURRENCY,
           generateApiKeys: generateApiKeys || false,
+          ...(allowLoginProxy && loginProxyUrl.trim() ? { loginProxyUrl: loginProxyUrl.trim() } : {}),
         }),
       });
       const data = await res.json();
@@ -263,10 +270,11 @@ export default function BulkAccountAutomationModal({
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium">
+              <label htmlFor={bulkAccountsInputId} className="mb-2 block text-sm font-medium">
                 Bulk Accounts <span className="text-red-500">*</span>
               </label>
               <textarea
+                id={bulkAccountsInputId}
                 value={bulkText}
                 onChange={(event) => setBulkText(event.target.value)}
                 placeholder={"gmail1@example.com|password1\ngmail2@example.com|password2"}
@@ -278,8 +286,9 @@ export default function BulkAccountAutomationModal({
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium">Concurrent Workers</label>
+              <label htmlFor={concurrencyInputId} className="mb-2 block text-sm font-medium">Concurrent Workers</label>
               <Input
+                id={concurrencyInputId}
                 type="number"
                 min="1"
                 max="8"
@@ -291,6 +300,21 @@ export default function BulkAccountAutomationModal({
                 Default 4. Allowed range: 1 to 8 workers.
               </p>
             </div>
+
+            {allowLoginProxy && (
+              <div>
+                <label htmlFor={loginProxyInputId} className="mb-2 block text-sm font-medium">Login Proxy URL</label>
+                <Input
+                  id={loginProxyInputId}
+                  value={loginProxyUrl}
+                  onChange={(event) => setLoginProxyUrl(event.target.value)}
+                  placeholder="http://user:pass@host:port"
+                />
+                <p className="mt-1 text-xs text-text-muted">
+                  Optional but recommended for CodeBuddy bulk accounts on a VPS. The browser login, region activation, and generated API key will use this proxy and the saved connection will keep it for routing/tests.
+                </p>
+              </div>
+            )}
           </>
         )}
 
@@ -528,4 +552,5 @@ BulkAccountAutomationModal.propTypes = {
   title: PropTypes.string.isRequired,
   serviceName: PropTypes.string.isRequired,
   generateApiKeys: PropTypes.bool,
+  allowLoginProxy: PropTypes.bool,
 };
