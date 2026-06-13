@@ -235,11 +235,39 @@ export function buildLookupResponse(job, extras = {}) {
   };
 }
 
-async function defaultBrowserLauncher() {
+function normalizeString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function buildPlaywrightProxy(proxyUrl) {
+  const trimmed = normalizeString(proxyUrl);
+  if (!trimmed) return null;
+
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch (error) {
+    throw new Error(`Invalid login proxy URL: ${error.message}`);
+  }
+
+  if (!parsed.protocol || !parsed.hostname) {
+    throw new Error("Invalid login proxy URL");
+  }
+
+  const server = `${parsed.protocol}//${parsed.hostname}${parsed.port ? `:${parsed.port}` : ""}`;
+  const proxy = { server };
+  if (parsed.username) proxy.username = decodeURIComponent(parsed.username);
+  if (parsed.password) proxy.password = decodeURIComponent(parsed.password);
+  return proxy;
+}
+
+async function defaultBrowserLauncher({ proxyUrl } = {}) {
   const { chromium } = await import("playwright");
+  const proxy = buildPlaywrightProxy(proxyUrl);
 
   return await chromium.launch({
     headless: true,
+    ...(proxy ? { proxy } : {}),
   });
 }
 
@@ -316,7 +344,7 @@ export class KiroBulkImportManager {
     this.latestJobId = readPersistedLatestJobId(this.metaFile);
   }
 
-  async startJob({ accounts, concurrency }) {
+  async startJob({ accounts, concurrency, loginProxyUrl }) {
     const { parsed, invalidLines } = parseKiroBulkAccounts(accounts);
     if (!parsed.length) {
       const error = invalidLines.length > 0
@@ -344,6 +372,7 @@ export class KiroBulkImportManager {
       error: null,
       cancelRequested: false,
       browser: null,
+      loginProxyUrl: normalizeString(loginProxyUrl),
       nextIndex: 0,
       manualFollowups: new Set(),
       persistPromise: Promise.resolve(),
@@ -723,7 +752,7 @@ export class KiroBulkImportManager {
     if (!job) return;
 
     try {
-      job.browser = await this.browserLauncher();
+      job.browser = await this.browserLauncher({ proxyUrl: job.loginProxyUrl });
       job.accounts.forEach((account) => {
         if (account.status === "queued" && (account.logs || []).length === 1) {
           this.setAccountStep(account, "waiting_for_worker", "Waiting for a free worker");

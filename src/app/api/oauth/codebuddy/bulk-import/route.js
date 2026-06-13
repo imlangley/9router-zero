@@ -31,6 +31,7 @@ export async function POST(request) {
       accounts,
       concurrency: body?.concurrency,
       generateApiKeys: body?.generateApiKeys === true,
+      loginProxyUrl: typeof body?.loginProxyUrl === "string" ? body.loginProxyUrl.trim() : "",
     });
 
     return NextResponse.json({

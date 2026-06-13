@@ -127,6 +127,22 @@ async function attachCodeBuddyWebCookie(context, tokens = {}) {
   };
 }
 
+function attachLoginProxyMetadata(tokens = {}, job = null) {
+  const loginProxyUrl = typeof job?.loginProxyUrl === "string" ? job.loginProxyUrl.trim() : "";
+  if (!loginProxyUrl) return tokens;
+
+  return {
+    ...tokens,
+    providerSpecificData: {
+      ...(tokens.providerSpecificData || {}),
+      connectionProxyEnabled: true,
+      connectionProxyUrl: loginProxyUrl,
+      loginProxyUrl,
+      loginProxyCapturedAt: new Date().toISOString(),
+    },
+  };
+}
+
 function createCodeBuddyPollPromise({
   deviceCode,
   pollToken,
@@ -274,8 +290,8 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     this.generateApiKeys = generateApiKeys;
   }
 
-  async startJob({ accounts, concurrency, generateApiKeys }) {
-    const job = await super.startJob({ accounts, concurrency });
+  async startJob({ accounts, concurrency, generateApiKeys, loginProxyUrl }) {
+    const job = await super.startJob({ accounts, concurrency, loginProxyUrl });
     const internalJob = this.jobs.get(job.jobId) || job;
     if (generateApiKeys) {
       internalJob.generateApiKeys = true;
@@ -336,6 +352,7 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
 
     const webCookie = await captureCodeBuddyWebCookie(context);
     const { createProviderConnection } = await import("../../../models/index.js");
+    const loginProxyUrl = typeof job?.loginProxyUrl === "string" ? job.loginProxyUrl.trim() : "";
     const apiConnection = await createProviderConnection({
       provider: CODEBUDDY_PROVIDER_ID,
       authType: "apikey",
@@ -355,6 +372,14 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         apiKeyName: keyResult.name,
         apiKeyExpiresAt: keyResult.expiresAt,
         sourceOAuthConnectionId: account._oauthConnectionId || null,
+        ...(loginProxyUrl
+          ? {
+              connectionProxyEnabled: true,
+              connectionProxyUrl: loginProxyUrl,
+              loginProxyUrl,
+              loginProxyCapturedAt: new Date().toISOString(),
+            }
+          : {}),
         ...(webCookie
           ? {
               webCookie,
@@ -396,7 +421,10 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
 
         this.setAccountStep(account, "saving_connection", "Saving CodeBuddy OAuth connection");
         await this.persistJobSnapshot(job, { forcePreview: true });
-        const tokensWithCookie = await attachCodeBuddyWebCookie(context, result.tokens);
+        const tokensWithCookie = attachLoginProxyMetadata(
+          await attachCodeBuddyWebCookie(context, result.tokens),
+          job
+        );
         const { connection } = await this.saveConnection({
           tokens: tokensWithCookie,
           email: account.email,
@@ -511,7 +539,10 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
 
         this.setAccountStep(account, "saving_connection", "Saving CodeBuddy OAuth connection");
         await this.persistJobSnapshot(job, { forcePreview: true });
-        const tokensWithCookie = await attachCodeBuddyWebCookie(context, automationResult.tokens);
+        const tokensWithCookie = attachLoginProxyMetadata(
+          await attachCodeBuddyWebCookie(context, automationResult.tokens),
+          job
+        );
         const { connection } = await this.saveConnection({
           tokens: tokensWithCookie,
           email: account.email,
@@ -603,7 +634,10 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
           await this.persistJobSnapshot(job, { forcePreview: true });
 
           try {
-            const tokensWithCookie = await attachCodeBuddyWebCookie(context, pollResult.tokens);
+            const tokensWithCookie = attachLoginProxyMetadata(
+              await attachCodeBuddyWebCookie(context, pollResult.tokens),
+              job
+            );
             const { connection } = await this.saveConnection({
               tokens: tokensWithCookie,
               email: account.email,
