@@ -278,9 +278,9 @@ async function defaultSocialExchange(args) {
 
 export async function createFreshContext(browser, options = {}) {
   const proxy = buildPlaywrightProxy(options.proxyUrl);
-  const context = await browser.newContext({
-    ...(proxy ? { proxy } : {}),
-  });
+  const context = proxy
+    ? await browser.newContext({ proxy })
+    : await browser.newContext();
   const page = await context.newPage();
   return { context, page };
 }
