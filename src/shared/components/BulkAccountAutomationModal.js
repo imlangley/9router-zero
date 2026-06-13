@@ -98,6 +98,16 @@ export default function BulkAccountAutomationModal({
     [...(activeJob?.activity || [])].reverse()
   ), [activeJob]);
 
+  const browserCompatibleProxyPools = useMemo(
+    () => proxyPools.filter((pool) => pool.type === "http" && pool.proxyUrl),
+    [proxyPools]
+  );
+
+  const relayProxyPools = useMemo(
+    () => proxyPools.filter((pool) => pool.type !== "http" || !pool.proxyUrl),
+    [proxyPools]
+  );
+
   const resetState = useCallback(() => {
     setBulkText("");
     setConcurrency(String(DEFAULT_CONCURRENCY));
@@ -159,7 +169,7 @@ export default function BulkAccountAutomationModal({
         const res = await fetch("/api/proxy-pools?isActive=true", { cache: "no-store" });
         const data = await res.json();
         if (!cancelled && res.ok) {
-          setProxyPools((data.proxyPools || []).filter((pool) => pool.type === "http" && pool.proxyUrl));
+          setProxyPools(data.proxyPools || []);
         }
       } catch {
         if (!cancelled) setProxyPools([]);
@@ -336,15 +346,27 @@ export default function BulkAccountAutomationModal({
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
                 >
                   <option value={NONE_PROXY_POOL_VALUE}>None - use VPS IP</option>
-                  <option value={ROUND_ROBIN_PROXY_POOL_VALUE} disabled={proxyPools.length === 0}>Round-robin active HTTP pools</option>
-                  {proxyPools.map((pool) => (
+                  <option value={ROUND_ROBIN_PROXY_POOL_VALUE} disabled={browserCompatibleProxyPools.length === 0}>Round-robin browser-compatible HTTP pools</option>
+                  {browserCompatibleProxyPools.map((pool) => (
                     <option key={pool.id} value={pool.id}>{pool.name}</option>
                   ))}
+                  {relayProxyPools.length > 0 && (
+                    <optgroup label="Not usable for browser login">
+                      {relayProxyPools.map((pool) => (
+                        <option key={pool.id} value={`disabled-${pool.id}`} disabled>
+                          {pool.name} ({pool.type || "unknown"} relay)
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
                 <p className="mt-1 text-xs text-text-muted">
-                  Recommended for CodeBuddy bulk accounts on a VPS. The browser login, region activation, and generated API key use the selected pool; round-robin assigns active HTTP pools across accounts.
+                  Recommended for CodeBuddy bulk accounts on a VPS. Browser login needs raw HTTP/SOCKS-style proxy pools; Vercel/Cloudflare/Deno relay pools are shown disabled because Playwright cannot use relay URLs as browser proxies.
                 </p>
-                {proxyPools.length === 0 && (
+                <p className="mt-1 text-xs text-text-muted">
+                  Showing {browserCompatibleProxyPools.length} browser-compatible pool{browserCompatibleProxyPools.length === 1 ? "" : "s"} out of {proxyPools.length} active pool{proxyPools.length === 1 ? "" : "s"}.
+                </p>
+                {browserCompatibleProxyPools.length === 0 && (
                   <p className="mt-1 text-xs text-amber-500">No active HTTP proxy pools found. Add one in Proxy Pools first.</p>
                 )}
               </div>
