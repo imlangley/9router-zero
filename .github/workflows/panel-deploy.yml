@@ -59,8 +59,8 @@ jobs:
           cp -a jsconfig.json panel-artifact/jsconfig.json
           cp -a open-sse panel-artifact/open-sse
           cp -a i18n panel-artifact/i18n
-          cp -a assets panel-artifact/assets
-          cp -a images panel-artifact/images
+          if [ -d assets ]; then cp -a assets panel-artifact/assets; fi
+          if [ -d images ]; then cp -a images panel-artifact/images; fi
           if [ -f .env.example ]; then cp -a .env.example panel-artifact/.env.example; fi
           tar -C panel-artifact -czf panel-artifact.tar.gz .
 
