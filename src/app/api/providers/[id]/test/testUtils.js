@@ -1,5 +1,4 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
-import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { PROVIDER_ENDPOINTS } from "@/shared/constants/config";
@@ -37,6 +36,7 @@ import {
   CODEBUDDY_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
+import { selectProxyForRequest, recordProxyRequestResult } from "open-sse/services/proxyRotation.js";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -717,18 +717,43 @@ export async function testSingleConnection(id) {
   const connection = await getProviderConnectionById(id);
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
 
-  const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  const proxyDecision = await selectProxyForRequest({
+    provider: connection.provider,
+    credentials: connection,
+    purpose: "connection_test",
+  });
+  const effectiveProxy = proxyDecision.proxyOptions;
+
+  if (proxyDecision.blocked) {
+    const proxy = recordProxyRequestResult(proxyDecision, {
+      failed: true,
+      latencyMs: 0,
+      error: proxyDecision.error,
+    });
+    await updateProviderConnection(id, {
+      testStatus: "error",
+      lastError: proxyDecision.error,
+      lastErrorAt: new Date().toISOString(),
+    });
+    return { valid: false, error: proxyDecision.error, latencyMs: 0, testedAt: new Date().toISOString(), proxy };
+  }
 
   if (effectiveProxy.connectionProxyEnabled && effectiveProxy.connectionProxyUrl && !effectiveProxy.vercelRelayUrl) {
     const proxyResult = await testProxyUrl({ proxyUrl: effectiveProxy.connectionProxyUrl });
     if (!proxyResult.ok) {
       const proxyError = proxyResult.error || `Proxy test failed with status ${proxyResult.status}`;
+      const proxy = recordProxyRequestResult(proxyDecision, {
+        failed: true,
+        latencyMs: 0,
+        statusCode: proxyResult.status,
+        error: proxyError,
+      });
       await updateProviderConnection(id, {
         testStatus: "error",
         lastError: proxyError,
         lastErrorAt: new Date().toISOString(),
       });
-      return { valid: false, error: proxyError, latencyMs: 0, testedAt: new Date().toISOString() };
+      return { valid: false, error: proxyError, latencyMs: 0, testedAt: new Date().toISOString(), proxy };
     }
   }
 
@@ -742,6 +767,12 @@ export async function testSingleConnection(id) {
   }
 
   const latencyMs = Date.now() - start;
+  const proxy = recordProxyRequestResult(proxyDecision, {
+    failed: !result.valid,
+    latencyMs,
+    statusCode: result.statusCode || null,
+    error: result.error || null,
+  });
 
   const updateData = {
     testStatus: result.valid ? "active" : "error",
@@ -770,5 +801,5 @@ export async function testSingleConnection(id) {
 
   await updateProviderConnection(id, updateData);
 
-  return { valid: result.valid, error: result.error, refreshed: !!result.refreshed, latencyMs, testedAt: new Date().toISOString() };
+  return { valid: result.valid, error: result.error, refreshed: !!result.refreshed, latencyMs, testedAt: new Date().toISOString(), proxy };
 }

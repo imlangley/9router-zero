@@ -52,6 +52,7 @@ export default function ProxyPoolsPage() {
   const [healthChecking, setHealthChecking] = useState(false);
   const [healthProgress, setHealthProgress] = useState({ current: 0, total: 0 });
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [routingDefaults, setRoutingDefaults] = useState({ runtimeProxySlowThresholdMs: 15000 });
   const [confirmState, setConfirmState] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(PROXY_POOL_DEFAULT_PAGE_SIZE);
@@ -84,9 +85,42 @@ export default function ProxyPoolsPage() {
     }
   }, []);
 
+  const fetchRoutingDefaults = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings", { cache: "no-store" });
+      const data = await res.json();
+      if (res.ok) {
+        setRoutingDefaults({
+          runtimeProxySlowThresholdMs: Number(data.runtimeProxySlowThresholdMs) || 15000,
+        });
+      }
+    } catch (error) {
+      console.log("Error fetching proxy routing defaults:", error);
+    }
+  }, []);
+
+  const updateRoutingDefaults = async (updates) => {
+    const next = { ...routingDefaults, ...updates };
+    setRoutingDefaults(next);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update proxy routing defaults");
+      notify.success("Proxy routing defaults updated");
+    } catch (error) {
+      notify.error(error.message || "Failed to update proxy routing defaults");
+      fetchRoutingDefaults();
+    }
+  };
+
   useEffect(() => {
     fetchProxyPools();
-  }, [fetchProxyPools]);
+    fetchRoutingDefaults();
+  }, [fetchProxyPools, fetchRoutingDefaults]);
 
   const resetForm = () => {
     setEditingProxyPool(null);
@@ -613,6 +647,7 @@ export default function ProxyPoolsPage() {
             {showRelayMenu && (
               <div className="absolute left-0 top-full z-50 mt-1 w-48 rounded-xl border border-black/10 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-zinc-900 sm:left-auto sm:right-0">
                 <button
+                  type="button"
                   onClick={() => {
                     openCloudflareModal();
                     setShowRelayMenu(false);
@@ -623,6 +658,7 @@ export default function ProxyPoolsPage() {
                   Cloudflare Relay
                 </button>
                 <button
+                  type="button"
                   onClick={() => {
                     openVercelModal();
                     setShowRelayMenu(false);
@@ -633,6 +669,7 @@ export default function ProxyPoolsPage() {
                   Vercel Relay
                 </button>
                 <button
+                  type="button"
                   onClick={() => {
                     openDenoModal();
                     setShowRelayMenu(false);
@@ -652,6 +689,36 @@ export default function ProxyPoolsPage() {
           <Button size="sm" icon="add" onClick={openCreateModal}>Add Proxy Pool</Button>
         </div>
       </div>
+
+      <Card>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold text-text-main">Proxy Routing Defaults</h2>
+              <Badge variant="default" size="sm">provider policies</Badge>
+            </div>
+            <p className="mt-1 text-xs text-text-muted">
+              Proxy rotation is configured per provider from the provider page. This default threshold marks slow chat requests and connection tests.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-[minmax(180px,220px)] sm:items-end">
+            <div>
+              <label htmlFor="runtime-proxy-slow-threshold" className="mb-1 block text-xs font-medium text-text-muted">
+                Default slow threshold (ms)
+              </label>
+              <Input
+                id="runtime-proxy-slow-threshold"
+                type="number"
+                min="1000"
+                step="1000"
+                value={String(routingDefaults.runtimeProxySlowThresholdMs)}
+                onChange={(event) => setRoutingDefaults((prev) => ({ ...prev, runtimeProxySlowThresholdMs: Number(event.target.value) || 15000 }))}
+                onBlur={() => updateRoutingDefaults({ runtimeProxySlowThresholdMs: routingDefaults.runtimeProxySlowThresholdMs })}
+              />
+            </div>
+          </div>
+        </div>
+      </Card>
 
       <Card>
         <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -762,6 +829,7 @@ export default function ProxyPoolsPage() {
                     title={pool.isActive ? "Disable" : "Enable"}
                   />
                   <button
+                    type="button"
                     onClick={() => handleTest(pool.id)}
                     className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary"
                     title="Test proxy"
@@ -775,6 +843,7 @@ export default function ProxyPoolsPage() {
                     </span>
                   </button>
                   <button
+                    type="button"
                     onClick={() => openEditModal(pool)}
                     className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary"
                     title="Edit"
@@ -782,6 +851,7 @@ export default function ProxyPoolsPage() {
                     <span className="material-symbols-outlined text-[18px]">edit</span>
                   </button>
                   <button
+                    type="button"
                     onClick={() => handleDelete(pool)}
                     className="p-2 rounded hover:bg-red-500/10 text-red-500"
                     title="Delete"
@@ -814,8 +884,9 @@ export default function ProxyPoolsPage() {
       >
         <div className="flex flex-col gap-4">
           <div>
-            <label className="text-sm font-medium text-text-main mb-1 block">Paste Proxy List (One per line)</label>
+            <label htmlFor="batch-import-proxy-list" className="text-sm font-medium text-text-main mb-1 block">Paste Proxy List (One per line)</label>
             <textarea
+              id="batch-import-proxy-list"
               value={batchImportText}
               onChange={(e) => setBatchImportText(e.target.value)}
               placeholder={"http://user:pass@127.0.0.1:7897\n127.0.0.1:7897:user:pass"}

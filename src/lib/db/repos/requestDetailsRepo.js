@@ -122,6 +122,7 @@ export function compactRequestDetail(detail, configuredMaxSize = DEFAULT_MAX_JSO
     providerRequest: compactField(detail?.providerRequest),
     providerResponse: compactField(detail?.providerResponse),
     response: compactField(detail?.response),
+    proxy: compactField(detail?.proxy),
   };
 }
 

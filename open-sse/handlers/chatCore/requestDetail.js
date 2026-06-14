@@ -67,6 +67,7 @@ export function buildRequestDetail(base, overrides = {}) {
     providerRequest: base.providerRequest || null,
     providerResponse: base.providerResponse || null,
     response: base.response || {},
+    proxy: base.proxy || null,
     status: base.status || "success",
     ...overrides
   };

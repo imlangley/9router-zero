@@ -95,6 +95,7 @@ export async function POST(request) {
           error: data.error || null,
           diagnosis: data.diagnosis || null,
           statusCode: data.statusCode || null,
+          proxy: data.proxy || null,
           testedAt: data.testedAt || new Date().toISOString(),
         });
       } catch (error) {

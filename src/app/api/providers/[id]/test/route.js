@@ -15,6 +15,7 @@ export async function POST(request, { params }) {
       valid: result.valid,
       error: result.error,
       refreshed: result.refreshed || false,
+      proxy: result.proxy || null,
     });
   } catch (error) {
     console.log("Error testing connection:", error);

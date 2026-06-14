@@ -88,6 +88,59 @@ function getInputTokens(tokens) {
   return prompt < cache ? cache : prompt;
 }
 
+function getProxyIndicator(proxy) {
+  if (!proxy?.enabled) {
+    return {
+      label: "No proxy",
+      colorClass: "bg-zinc-400",
+      textClass: "text-text-muted",
+      tone: "none"
+    };
+  }
+
+  if (proxy.outcome === "failed") {
+    return {
+      label: "Failed",
+      colorClass: "bg-red-500",
+      textClass: "text-red-600 dark:text-red-400",
+      tone: "failed"
+    };
+  }
+
+  if (proxy.outcome === "slow") {
+    return {
+      label: "Slow",
+      colorClass: "bg-yellow-400",
+      textClass: "text-yellow-700 dark:text-yellow-300",
+      tone: "slow"
+    };
+  }
+
+  return {
+    label: "OK",
+    colorClass: "bg-green-500",
+    textClass: "text-green-600 dark:text-green-400",
+    tone: "success"
+  };
+}
+
+function ProxyBadge({ proxy }) {
+  const indicator = getProxyIndicator(proxy);
+  const label = proxy?.shortLabel || proxy?.displayLabel || indicator.label;
+
+  return (
+    <div className="flex min-w-0 items-center gap-2" title={proxy?.displayLabel || indicator.label}>
+      <span className={cn("size-2 shrink-0 rounded-full", indicator.colorClass)} aria-hidden="true" />
+      <div className="min-w-0">
+        <div className={cn("truncate text-sm font-medium", indicator.textClass)}>{label}</div>
+        {proxy?.latencyMs ? (
+          <div className="font-mono text-[11px] text-text-muted">{proxy.latencyMs}ms</div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export default function RequestDetailsTab() {
   const [details, setDetails] = useState([]);
   const [pagination, setPagination] = useState({
@@ -238,7 +291,7 @@ export default function RequestDetailsTab() {
 
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[880px]">
+          <table className="w-full min-w-[980px]">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Timestamp</th>
@@ -247,13 +300,14 @@ export default function RequestDetailsTab() {
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Input Tokens</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Output Tokens</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Latency</th>
+                <th className="text-left p-4 text-sm font-semibold text-text-main">Proxy</th>
                 <th className="text-center p-4 text-sm font-semibold text-text-main">Action</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="8" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -262,14 +316,14 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="8" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
               ) : (
-                details.map((detail, index) => (
+                details.map((detail) => (
                   <tr
-                    key={`${detail.id}-${index}`}
+                    key={detail.id}
                     className="border-b border-black/5 dark:border-white/5 last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
                   >
                     <td className="whitespace-nowrap p-4 text-sm text-text-main">
@@ -294,6 +348,9 @@ export default function RequestDetailsTab() {
                         <div>TTFT: <span className="font-mono">{detail.latency?.ttft || 0}ms</span></div>
                         <div>Total: <span className="font-mono">{detail.latency?.total || 0}ms</span></div>
                       </div>
+                    </td>
+                    <td className="max-w-[180px] p-4">
+                      <ProxyBadge proxy={detail.proxy} />
                     </td>
                     <td className="p-4 text-center">
                       <Button
@@ -375,6 +432,58 @@ export default function RequestDetailsTab() {
                 <span className="text-text-main font-mono">
                   {selectedDetail.tokens?.completion_tokens?.toLocaleString() || 0}
                 </span>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-black/5 bg-black/[0.02] p-4 dark:border-white/5 dark:bg-white/[0.02]">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-text-main">
+                  <span className="material-symbols-outlined text-[18px] text-text-muted">route</span>
+                  Proxy
+                </h3>
+                <ProxyBadge proxy={selectedDetail.proxy} />
+              </div>
+              <div className="grid gap-2 text-sm sm:grid-cols-2">
+                <div>
+                  <span className="text-text-muted">Outcome:</span>{" "}
+                  <span className={cn("font-medium", getProxyIndicator(selectedDetail.proxy).textClass)}>
+                    {selectedDetail.proxy?.outcome || "none"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-text-muted">Source:</span>{" "}
+                  <span className="text-text-main">{selectedDetail.proxy?.source || "none"}</span>
+                </div>
+                <div>
+                  <span className="text-text-muted">Pool:</span>{" "}
+                  <span className="text-text-main">{selectedDetail.proxy?.displayLabel || selectedDetail.proxy?.poolName || "—"}</span>
+                </div>
+                <div>
+                  <span className="text-text-muted">Type:</span>{" "}
+                  <span className="text-text-main">{selectedDetail.proxy?.type || "—"}</span>
+                </div>
+                <div>
+                  <span className="text-text-muted">Host:</span>{" "}
+                  <span className="font-mono text-text-main">{selectedDetail.proxy?.hostPort || selectedDetail.proxy?.host || "—"}</span>
+                </div>
+                <div>
+                  <span className="text-text-muted">Status:</span>{" "}
+                  <span className="font-mono text-text-main">{selectedDetail.proxy?.statusCode || "—"}</span>
+                </div>
+                <div>
+                  <span className="text-text-muted">Latency:</span>{" "}
+                  <span className="font-mono text-text-main">{selectedDetail.proxy?.latencyMs ? `${selectedDetail.proxy.latencyMs}ms` : "—"}</span>
+                </div>
+                <div>
+                  <span className="text-text-muted">Masked URL:</span>{" "}
+                  <span className="break-all font-mono text-text-main">{selectedDetail.proxy?.urlMasked || "—"}</span>
+                </div>
+                {selectedDetail.proxy?.error ? (
+                  <div className="sm:col-span-2">
+                    <span className="text-text-muted">Error:</span>{" "}
+                    <span className="break-all text-red-600 dark:text-red-400">{selectedDetail.proxy.error}</span>
+                  </div>
+                ) : null}
               </div>
             </div>
             

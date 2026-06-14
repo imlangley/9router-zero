@@ -27,6 +27,19 @@ const KIRO_BULK_JOB_EXPIRED_MESSAGE = "Bulk import progress expired or was clear
 const CONNECTIONS_DEFAULT_PAGE_SIZE = 20;
 const MODELS_DEFAULT_PAGE_SIZE = 20;
 const PROVIDER_DETAIL_FETCH_TIMEOUT_MS = 8000;
+const DEFAULT_PROXY_POLICY = {
+  mode: "one_to_one",
+  selectedPoolIds: [],
+  fallback: "fail",
+  slowThresholdMs: 15000,
+};
+
+const PROXY_POLICY_OPTIONS = [
+  { value: "none", label: "None / Direct", description: "No proxy for this provider's chat requests or connection tests." },
+  { value: "one_to_one", label: "One-to-one", description: "Use each connection's assigned proxy pool." },
+  { value: "rotate_all", label: "Rotation", description: "Rotate across all active proxy pools after success, failure, or slow tests." },
+  { value: "rotate_selected", label: "Select specific", description: "Rotate only across selected proxy pools for this provider." },
+];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -38,6 +51,18 @@ function isBulkJobTerminal(status) {
 
 function isBulkJobActive(status) {
   return ["queued", "running", "needs_manual"].includes(status);
+}
+
+function normalizeProxyPolicy(policy = {}) {
+  const mode = PROXY_POLICY_OPTIONS.some((option) => option.value === policy.mode) ? policy.mode : DEFAULT_PROXY_POLICY.mode;
+  return {
+    ...DEFAULT_PROXY_POLICY,
+    ...policy,
+    mode,
+    selectedPoolIds: Array.isArray(policy.selectedPoolIds) ? policy.selectedPoolIds : [],
+    fallback: ["fail", "one_to_one", "direct"].includes(policy.fallback) ? policy.fallback : DEFAULT_PROXY_POLICY.fallback,
+    slowThresholdMs: Number(policy.slowThresholdMs) || DEFAULT_PROXY_POLICY.slowThresholdMs,
+  };
 }
 
 async function fetchBulkJobById(jobId) {
@@ -101,6 +126,8 @@ export default function ProviderDetailPage() {
   const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
   const [bulkUpdatingProxy, setBulkUpdatingProxy] = useState(false);
+  const [proxyPolicy, setProxyPolicy] = useState(DEFAULT_PROXY_POLICY);
+  const [savingProxyPolicy, setSavingProxyPolicy] = useState(false);
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
@@ -143,7 +170,7 @@ export default function ProviderDetailPage() {
   };
 
   const triggerOAuthConnection = () => {
-    if (providerId === "kiro" || providerId === "codebuddy") {
+    if (providerId === "kiro" || providerId === "codebuddy" || providerId === "qoder") {
       router.push(`/dashboard/automation?provider=${providerId}`);
       return;
     }
@@ -212,7 +239,7 @@ export default function ProviderDetailPage() {
   const isAnthropicCompatible = isAnthropicCompatibleProvider(providerId);
   const isCompatible = isOpenAICompatible || isAnthropicCompatible;
   const hasDualAuthModes = !isCompatible && isOAuth && supportsApiKeyAuth;
-  const usesAutomationLogin = providerId === "kiro" || providerId === "codebuddy";
+  const usesAutomationLogin = providerId === "kiro" || providerId === "codebuddy" || providerId === "qoder";
   const oauthConnectionLabel = providerId === "xai" ? "Grok Build OAuth" : "OAuth";
   const apiKeyConnectionLabel = providerId === "xai" ? "xAI API Key" : "API Key";
   const thinkingConfig = AI_PROVIDERS[providerId]?.thinkingConfig || THINKING_CONFIG.extended;
@@ -335,6 +362,7 @@ export default function ProviderDetailPage() {
       const override = (settingsData.providerStrategies || {})[providerId] || {};
       setProviderStrategy(override.fallbackStrategy || null);
       setProviderStickyLimit(override.stickyRoundRobinLimit != null ? String(override.stickyRoundRobinLimit) : "1");
+      setProxyPolicy(normalizeProxyPolicy((settingsData.proxyProviderPolicies || {})[providerId] || {}));
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
@@ -421,6 +449,37 @@ export default function ProviderDetailPage() {
   const handleStickyLimitChange = (value) => {
     setProviderStickyLimit(value);
     saveProviderStrategy("round-robin", value);
+  };
+
+  const saveProxyPolicy = async (nextPolicy) => {
+    const normalized = normalizeProxyPolicy(nextPolicy);
+    setProxyPolicy(normalized);
+    setSavingProxyPolicy(true);
+    try {
+      const settingsRes = await fetch("/api/settings", { cache: "no-store" });
+      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
+      const current = settingsData.proxyProviderPolicies || {};
+      const updated = { ...current, [providerId]: normalized };
+
+      await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proxyProviderPolicies: updated }),
+      });
+    } catch (error) {
+      console.log("Error saving proxy policy:", error);
+    } finally {
+      setSavingProxyPolicy(false);
+    }
+  };
+
+  const updateProxyPolicy = (updates) => saveProxyPolicy({ ...proxyPolicy, ...updates });
+
+  const toggleProxyPolicyPool = (poolId) => {
+    const selected = new Set(proxyPolicy.selectedPoolIds || []);
+    if (selected.has(poolId)) selected.delete(poolId);
+    else selected.add(poolId);
+    updateProxyPolicy({ selectedPoolIds: [...selected] });
   };
 
   const saveThinkingConfig = async (mode) => {
@@ -711,6 +770,7 @@ export default function ProviderDetailPage() {
           [connection.id]: {
             state: valid ? "success" : "failed",
             error: valid ? null : (data.error || null),
+            proxy: data.proxy || null,
           },
         }));
       } catch (error) {
@@ -952,6 +1012,8 @@ export default function ProviderDetailPage() {
     return "Selected connections have mixed proxy bindings";
   })();
 
+  const currentProxyPolicyLabel = PROXY_POLICY_OPTIONS.find((option) => option.value === proxyPolicy.mode)?.label || "One-to-one";
+
   const getProxyTargetConnections = () => (
     selectedConnections.length > 0 ? selectedConnections : filteredConnections
   );
@@ -1091,6 +1153,7 @@ export default function ProviderDetailPage() {
               <ConnectionRow
                 connection={conn}
                 proxyPools={proxyPools}
+                proxyPolicyMode={proxyPolicy.mode}
                 isOAuth={isOAuth}
                 isFirst={globalIndex === 0}
                 isLast={globalIndex === connections.length - 1}
@@ -1135,47 +1198,123 @@ export default function ProviderDetailPage() {
     <Modal
       isOpen={showBulkProxyModal}
       onClose={closeBulkProxyModal}
-      title={selectedConnections.length > 0
-        ? `Apply Proxy (${selectedConnections.length} selected)`
-        : `Apply Proxy (all ${filteredConnections.length} on this view)`}
+      title="Proxy Policy"
     >
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col">
-          <button
-            onClick={handleApplyOneToOne}
-            disabled={bulkUpdatingProxy || activePools.length === 0}
-            className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <span className="material-symbols-outlined text-text-muted text-[18px]">sync_alt</span>
-            <span className="text-sm text-text-main">One-to-one (rotate)</span>
-          </button>
-          <button
-            onClick={() => handleApplySinglePool(null)}
-            disabled={bulkUpdatingProxy}
-            className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <span className="material-symbols-outlined text-text-muted text-[18px]">link_off</span>
-            <span className="text-sm text-text-main">None (unbind all)</span>
-          </button>
-          {proxyPools.map((pool) => (
-            <button
-              key={pool.id}
-              onClick={() => handleApplySinglePool(pool.id)}
-              disabled={bulkUpdatingProxy || pool.isActive !== true}
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <span className="material-symbols-outlined text-text-muted text-[18px]">lan</span>
-              <span className="truncate text-sm text-text-main">{pool.name}</span>
-              {pool.isActive !== true && (
-                <span className="text-[10px] text-text-muted">(inactive)</span>
-              )}
-            </button>
-          ))}
+      <div className="flex flex-col gap-5">
+        <div>
+          <p className="mb-2 text-xs text-text-muted">
+            Controls how {providerInfo?.name || providerId} uses proxies for chat requests and Test Connection One-by-One.
+          </p>
+          <div className="grid gap-2">
+            {PROXY_POLICY_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => updateProxyPolicy({ mode: option.value })}
+                disabled={savingProxyPolicy}
+                className={`rounded-xl border px-3 py-2 text-left transition-colors ${proxyPolicy.mode === option.value ? "border-primary bg-primary/5" : "border-black/10 hover:bg-black/[0.03] dark:border-white/10 dark:hover:bg-white/[0.04]"}`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-text-main">{option.label}</span>
+                  {proxyPolicy.mode === option.value && <Badge variant="success" size="sm">active</Badge>}
+                </div>
+                <p className="mt-1 text-xs text-text-muted">{option.description}</p>
+              </button>
+            ))}
+          </div>
         </div>
 
-        {bulkUpdatingProxy && <p className="text-xs text-text-muted">Applying...</p>}
+        {(proxyPolicy.mode === "rotate_all" || proxyPolicy.mode === "rotate_selected") && (
+          <div className="grid gap-3 rounded-xl border border-black/5 bg-black/[0.02] p-3 dark:border-white/5 dark:bg-white/[0.02]">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Input
+                label="Slow threshold (ms)"
+                type="number"
+                min="1000"
+                step="1000"
+                value={String(proxyPolicy.slowThresholdMs)}
+                onChange={(event) => setProxyPolicy((prev) => ({ ...prev, slowThresholdMs: Number(event.target.value) || 15000 }))}
+                onBlur={() => updateProxyPolicy({ slowThresholdMs: proxyPolicy.slowThresholdMs })}
+              />
+              <Select
+                label="Fallback when no proxy"
+                value={proxyPolicy.fallback}
+                onChange={(event) => updateProxyPolicy({ fallback: event.target.value })}
+                options={[
+                  { value: "fail", label: "Fail request/test" },
+                  { value: "one_to_one", label: "Fallback to one-to-one" },
+                  { value: "direct", label: "Fallback direct" },
+                ]}
+              />
+            </div>
 
-        <Button onClick={closeBulkProxyModal} variant="ghost" fullWidth disabled={bulkUpdatingProxy}>
+            {proxyPolicy.mode === "rotate_selected" && (
+              <div>
+                <p className="mb-2 text-xs font-medium text-text-main">Selected proxy pools</p>
+                <div className="max-h-52 overflow-auto rounded-lg border border-black/5 dark:border-white/5">
+                  {proxyPools.map((pool) => (
+                    <label key={pool.id} className="flex cursor-pointer items-center gap-2 border-b border-black/5 px-3 py-2 last:border-b-0 dark:border-white/5">
+                      <input
+                        type="checkbox"
+                        checked={(proxyPolicy.selectedPoolIds || []).includes(pool.id)}
+                        onChange={() => toggleProxyPolicyPool(pool.id)}
+                        className="size-4 rounded border-black/20 dark:border-white/20"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-sm text-text-main">{pool.name}</span>
+                      <Badge variant={pool.isActive ? "success" : "default"} size="sm">{pool.isActive ? "active" : "inactive"}</Badge>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="rounded-xl border border-black/5 p-3 dark:border-white/5">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">One-to-one assignment tools</p>
+          <p className="mb-2 text-xs text-text-muted">
+            These keep the existing Apply Proxy behavior for assigned per-connection proxies. Target: {selectedConnections.length > 0 ? `${selectedConnections.length} selected` : `all ${filteredConnections.length} on this view`}.
+          </p>
+          <div className="flex flex-col">
+            <button
+              type="button"
+              onClick={handleApplyOneToOne}
+              disabled={bulkUpdatingProxy || activePools.length === 0}
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-text-muted text-[18px]">sync_alt</span>
+              <span className="text-sm text-text-main">Assign one-to-one across active pools</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleApplySinglePool(null)}
+              disabled={bulkUpdatingProxy}
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-text-muted text-[18px]">link_off</span>
+              <span className="text-sm text-text-main">Clear assigned proxies</span>
+            </button>
+            {proxyPools.map((pool) => (
+              <button
+                key={pool.id}
+                type="button"
+                onClick={() => handleApplySinglePool(pool.id)}
+                disabled={bulkUpdatingProxy || pool.isActive !== true}
+                className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-text-muted text-[18px]">lan</span>
+                <span className="truncate text-sm text-text-main">Assign {pool.name}</span>
+                {pool.isActive !== true && (
+                  <span className="text-[10px] text-text-muted">(inactive)</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {(bulkUpdatingProxy || savingProxyPolicy) && <p className="text-xs text-text-muted">Saving...</p>}
+
+        <Button onClick={closeBulkProxyModal} variant="ghost" fullWidth disabled={bulkUpdatingProxy || savingProxyPolicy}>
           Cancel
         </Button>
       </div>
@@ -1313,6 +1452,7 @@ export default function ProviderDetailPage() {
         )}
 
         <button
+          type="button"
           onClick={() => setShowAddCustomModel(true)}
           className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-primary/40 px-3 py-2 text-xs text-primary transition-colors hover:border-primary hover:bg-primary/5 sm:w-auto"
         >
@@ -1323,6 +1463,7 @@ export default function ProviderDetailPage() {
         {/* Import Qoder models button — only show for qoder provider */}
         {providerId === "qoder" && connections.some((conn) => conn.isActive !== false) && (
           <button
+            type="button"
             onClick={handleImportQoderModels}
             disabled={importingQoderModels}
             className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-blue-500/40 px-3 py-2 text-xs text-blue-600 dark:text-blue-400 transition-colors hover:border-blue-500 hover:bg-blue-500/5 sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1349,6 +1490,7 @@ export default function ProviderDetailPage() {
                 {notAdded.map((m) => (
                   <button
                     key={m.id}
+                    type="button"
                     onClick={async () => {
                       const alias = m.id.split("/").pop();
                       await handleSetAlias(m.id, alias, providerStorageAlias);
@@ -1373,6 +1515,7 @@ export default function ProviderDetailPage() {
               {disabledDisplayModels.map((m) => (
                 <button
                   key={m.id}
+                  type="button"
                   onClick={() => handleEnableModel(m.id)}
                   className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
                   title="Restore model"
@@ -1572,11 +1715,11 @@ export default function ProviderDetailPage() {
                   variant="secondary"
                   icon="lan"
                   onClick={openBulkProxyModal}
-                  title={selectedConnections.length === 0 ? "No selection — Apply Proxy will target all connections on this page" : `Apply Proxy to ${selectedConnections.length} selected`}
+                  title={selectedConnections.length === 0 ? "Configure provider proxy policy and one-to-one assignments" : `Configure proxy policy or assign proxy to ${selectedConnections.length} selected`}
                 >
                   {selectedConnections.length === 0
-                    ? "Apply Proxy (All)"
-                    : `Apply Proxy (${selectedConnections.length})`}
+                    ? `Proxy Policy: ${currentProxyPolicyLabel}`
+                    : `Proxy Policy (${selectedConnections.length})`}
                 </Button>
               )}
               {connections.length > 0 && (
