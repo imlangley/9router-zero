@@ -9,12 +9,10 @@ function isCodeBuddyTrialBlockedConnection(connection) {
   if (!connection) return false;
   const providerData = connection.providerSpecificData || {};
   const lastError = String(connection.lastError || "").toLowerCase();
+  // Only block if explicitly disabled or after actual 14017 chat errors
   if (providerData.routingDisabledReason === "trial_not_activated") return true;
   if (lastError.includes('"code":14017') || lastError.includes("trial version is not yet activated")) return true;
-  return providerData.automation === "apikey-generated"
-    && providerData.credentialKind === "codebuddy_api_key"
-    && providerData.trialStatus === "failed"
-    && providerData.billingOpened !== true;
+  return false;
 }
 
 // Mutex to prevent race conditions during account selection
