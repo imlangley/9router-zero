@@ -397,8 +397,8 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
       account,
       "saving_api_key",
       isTrialReadyForRouting
-        ? `Saving API key ${keyResult.keyId}`
-        : `Saving API key ${keyResult.keyId} as inactive because trial/billing is not ready`
+        ? `Saving API key ${keyResult.keyId} (trial ready)`
+        : `Saving API key ${keyResult.keyId} as active (trial status: ${trialStatus}, will be validated on first chat)`
     );
     await this.persistJobSnapshot(job, { forcePreview: true });
 
@@ -419,7 +419,6 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         credentialSource: account._oauthConnectionId ? "oauth_then_apikey" : "restricted_cookie_apikey",
         routingAuthHeader: "bearer+x-api-key",
         routingEndpoint: "https://www.codebuddy.ai/v2/chat/completions",
-        routingDisabledReason: isTrialReadyForRouting ? null : "trial_not_activated",
         apiKeyId: keyResult.keyId,
         apiKeyName: keyResult.name,
         apiKeyExpiresAt: keyResult.expiresAt,
@@ -428,7 +427,7 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         billingOpened,
         trialActivatedAt: trialReady ? new Date().toISOString() : null,
         trialDetails: keyResult.trialDetails || null,
-        trialFailureSummary: trialReady && billingOpened ? null : trialFailureSummary,
+        trialFailureSummary: isTrialReadyForRouting ? null : trialFailureSummary,
         ...(webCookie
           ? {
               webCookie,
@@ -436,13 +435,11 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
             }
           : {}),
       },
-      isActive: isTrialReadyForRouting,
-      testStatus: isTrialReadyForRouting ? "active" : "unavailable",
-      lastError: isTrialReadyForRouting
-        ? null
-        : `CodeBuddy trial is not activated; not routing this key. ${trialFailureSummary}`,
-      errorCode: isTrialReadyForRouting ? null : 14017,
-      lastErrorAt: isTrialReadyForRouting ? null : new Date().toISOString(),
+      isActive: true,
+      testStatus: "active",
+      lastError: null,
+      errorCode: null,
+      lastErrorAt: null,
     });
 
     const oldConnectionIds = Array.isArray(account._oldConnectionIds) ? [...new Set(account._oldConnectionIds)] : [];
