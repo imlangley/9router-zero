@@ -325,7 +325,11 @@ export class DefaultExecutor extends BaseExecutor {
 
     switch (this.provider) {
       case "gemini":
-        credentials.apiKey ? headers["x-goog-api-key"] = credentials.apiKey : headers["Authorization"] = `Bearer ${credentials.accessToken}`;
+        if (credentials.apiKey) {
+          headers["x-goog-api-key"] = credentials.apiKey;
+        } else {
+          headers["Authorization"] = `Bearer ${credentials.accessToken}`;
+        }
         break;
       case "claude": {
         // Overlay live cached headers from real Claude Code client over static defaults.
@@ -357,9 +361,11 @@ export class DefaultExecutor extends BaseExecutor {
           }
           Object.assign(headers, cached);
         }
-        credentials.apiKey
-          ? (headers["x-api-key"] = credentials.apiKey)
-          : (headers["Authorization"] = `Bearer ${credentials.accessToken}`);
+        if (credentials.apiKey) {
+          headers["x-api-key"] = credentials.apiKey;
+        } else {
+          headers["Authorization"] = `Bearer ${credentials.accessToken}`;
+        }
         break;
       }
       case "glm":
@@ -393,6 +399,7 @@ export class DefaultExecutor extends BaseExecutor {
             throw new Error("CodeBuddy credentials missing apiKey/accessToken");
           }
           headers["Authorization"] = `Bearer ${codeBuddyToken}`;
+          headers["X-Api-Key"] = codeBuddyToken;
           headers["Accept"] = "text/event-stream";
           headers["Content-Type"] = "application/json; charset=utf-8";
           headers["User-Agent"] = "CLI/2.105.2 CodeBuddy/2.105.2";

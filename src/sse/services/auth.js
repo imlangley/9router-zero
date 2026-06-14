@@ -5,6 +5,18 @@ import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
 
+function isCodeBuddyTrialBlockedConnection(connection) {
+  if (!connection) return false;
+  const providerData = connection.providerSpecificData || {};
+  const lastError = String(connection.lastError || "").toLowerCase();
+  if (providerData.routingDisabledReason === "trial_not_activated") return true;
+  if (lastError.includes('"code":14017') || lastError.includes("trial version is not yet activated")) return true;
+  return providerData.automation === "apikey-generated"
+    && providerData.credentialKind === "codebuddy_api_key"
+    && providerData.trialStatus === "failed"
+    && providerData.billingOpened !== true;
+}
+
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
 
@@ -64,6 +76,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const baseAvailableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
+      if (providerId === "codebuddy" && isCodeBuddyTrialBlockedConnection(c)) return false;
       return true;
     });
 
@@ -241,21 +254,32 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const backoffLevel = conn?.backoffLevel || 0;
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
-  let shouldFallback, cooldownMs, newBackoffLevel;
+  let shouldFallback, cooldownMs, newBackoffLevel, terminalReason;
   if (resetsAtMs && resetsAtMs > Date.now()) {
     shouldFallback = true;
     cooldownMs = Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
     newBackoffLevel = 0;
   } else {
-    ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
+    ({ shouldFallback, cooldownMs, newBackoffLevel, terminalReason } = checkFallbackError(status, errorText, backoffLevel));
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
   const lockUpdate = buildModelLockUpdate(model, cooldownMs);
 
+  const providerSpecificData = terminalReason === "codebuddy_trial_not_activated"
+    ? {
+        ...(conn?.providerSpecificData || {}),
+        routingDisabledReason: "trial_not_activated",
+        trialStatus: conn?.providerSpecificData?.trialStatus || "failed",
+        trialFailureSummary: reason,
+      }
+    : conn?.providerSpecificData;
+
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
+    ...(providerSpecificData ? { providerSpecificData } : {}),
+    ...(terminalReason === "codebuddy_trial_not_activated" ? { isActive: false } : {}),
     testStatus: "unavailable",
     lastError: reason,
     errorCode: status,

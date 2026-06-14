@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkFallbackError, isNonAccountError } from "../../open-sse/services/accountFallback.js";
+import { checkFallbackError, isCodeBuddyTrialNotActivatedError, isNonAccountError } from "../../open-sse/services/accountFallback.js";
 
 describe("account fallback classification", () => {
   it("treats Kiro content-length errors as non-account errors", () => {
@@ -22,5 +22,17 @@ describe("account fallback classification", () => {
 
   it("treats Kiro malformed payload errors as non-account errors", () => {
     expect(isNonAccountError(400, "Improperly formed request")).toBe(true);
+  });
+
+  it("quarantines CodeBuddy trial-not-activated errors instead of short rate-limit backoff", () => {
+    const errorText = '{"error":{"data":{"code":14017,"msg":"The trial version is not yet activated."}}}';
+
+    expect(isCodeBuddyTrialNotActivatedError(429, errorText)).toBe(true);
+
+    const fallback = checkFallbackError(429, errorText, 2);
+    expect(fallback.shouldFallback).toBe(true);
+    expect(fallback.terminalReason).toBe("codebuddy_trial_not_activated");
+    expect(fallback.newBackoffLevel).toBeGreaterThanOrEqual(2);
+    expect(fallback.cooldownMs).toBeGreaterThan(30 * 24 * 60 * 60 * 1000);
   });
 });

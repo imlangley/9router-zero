@@ -10,6 +10,20 @@ const NON_ACCOUNT_ERROR_TEXTS = [
   "improperly formed request",
 ];
 
+const CODEBUDDY_TRIAL_NOT_ACTIVATED_CODE = 14017;
+const CODEBUDDY_TRIAL_NOT_ACTIVATED_COOLDOWN_MS = 365 * 24 * 60 * 60 * 1000;
+
+export function isCodeBuddyTrialNotActivatedError(status, errorText) {
+  const lowerError = errorText
+    ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
+    : "";
+  return lowerError.includes(`"code":${CODEBUDDY_TRIAL_NOT_ACTIVATED_CODE}`)
+    || lowerError.includes(`code=${CODEBUDDY_TRIAL_NOT_ACTIVATED_CODE}`)
+    || lowerError.includes(`code ${CODEBUDDY_TRIAL_NOT_ACTIVATED_CODE}`)
+    || lowerError.includes("trial version is not yet activated")
+    || (status === 429 && lowerError.includes("trial") && lowerError.includes("activated"));
+}
+
 /**
  * Errors caused by the request payload itself should not rotate accounts.
  * Retrying the same oversized payload with another credential only amplifies
@@ -47,6 +61,15 @@ export function checkFallbackError(status, errorText, backoffLevel = 0) {
   const lowerError = errorText
     ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
     : "";
+
+  if (isCodeBuddyTrialNotActivatedError(status, lowerError)) {
+    return {
+      shouldFallback: true,
+      cooldownMs: CODEBUDDY_TRIAL_NOT_ACTIVATED_COOLDOWN_MS,
+      newBackoffLevel: BACKOFF_CONFIG.maxLevel,
+      terminalReason: "codebuddy_trial_not_activated",
+    };
+  }
 
   for (const rule of ERROR_RULES) {
     // Text-based rule: match substring in error message
