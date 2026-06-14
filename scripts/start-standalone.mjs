@@ -6,6 +6,20 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const standaloneRoot = path.join(projectRoot, ".next", "standalone");
+const playwrightCacheRoot = path.join(projectRoot, ".cache", "ms-playwright");
+const playwrightTmpRoot = path.join(projectRoot, ".cache", "tmp");
+const playwrightLibRoot = path.join(projectRoot, ".playwright-libs");
+
+process.env.PLAYWRIGHT_BROWSERS_PATH ||= playwrightCacheRoot;
+process.env.TMPDIR ||= playwrightTmpRoot;
+if (fs.existsSync(playwrightLibRoot)) {
+  process.env.LD_LIBRARY_PATH = [
+    playwrightLibRoot,
+    process.env.LD_LIBRARY_PATH || "",
+  ].filter(Boolean).join(path.delimiter);
+}
+
+fs.mkdirSync(playwrightTmpRoot, { recursive: true });
 
 function ensureLinkedDir(source, destination) {
   if (!fs.existsSync(source) || fs.existsSync(destination)) return;
