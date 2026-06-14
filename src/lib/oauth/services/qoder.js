@@ -27,6 +27,7 @@ import { v4 as uuidv4 } from "uuid";
 // 5 minutes; an individual request that stalls beyond this is treated as a
 // failed poll attempt and the next poll iteration retries.
 const FETCH_TIMEOUT_MS = 15_000;
+const proxyDispatchers = new Map();
 
 function base64Url(buf) {
   return buf
@@ -41,11 +42,27 @@ function base64Url(buf) {
  * upstream socket hangs on Node's default keepalive timeout (minutes) and
  * abandoned polls accumulate hung sockets.
  */
+async function getProxyDispatcher(proxyUrl) {
+  const normalized = String(proxyUrl || "").trim();
+  if (!normalized || !/^https?:\/\//i.test(normalized)) return null;
+  if (!proxyDispatchers.has(normalized)) {
+    const { ProxyAgent } = await import("undici");
+    proxyDispatchers.set(normalized, new ProxyAgent({ uri: normalized }));
+  }
+  return proxyDispatchers.get(normalized);
+}
+
 async function fetchWithTimeout(url, init = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort("timeout"), FETCH_TIMEOUT_MS);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const dispatcher = await getProxyDispatcher(init.proxyUrl);
+    const { proxyUrl, ...fetchInit } = init;
+    return await fetch(url, {
+      ...fetchInit,
+      ...(dispatcher ? { dispatcher } : {}),
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -94,7 +111,7 @@ export class QoderService {
    *
    * Upstream returns 202/404 while waiting; 200 with a JSON body when done.
    */
-  async pollDeviceToken({ nonce, codeVerifier }) {
+  async pollDeviceToken({ nonce, codeVerifier, proxyUrl } = {}) {
     if (!nonce || !codeVerifier) {
       throw new Error("pollDeviceToken: missing nonce or code verifier");
     }
@@ -102,6 +119,7 @@ export class QoderService {
 
     const response = await fetchWithTimeout(url, {
       method: "GET",
+      proxyUrl,
       headers: {
         Accept: "application/json",
         "User-Agent": "Go-http-client/2.0",
@@ -153,10 +171,11 @@ export class QoderService {
    * Fetch profile info for the freshly-issued token. Best-effort — failures
    * shouldn't block login; returning empty strings is fine.
    */
-  async fetchUserInfo(accessToken) {
+  async fetchUserInfo(accessToken, { proxyUrl } = {}) {
     try {
       const response = await fetchWithTimeout(QODER_USERINFO_URL, {
         method: "GET",
+        proxyUrl,
         headers: {
           Authorization: `Bearer ${accessToken}`,
           Accept: "application/json",

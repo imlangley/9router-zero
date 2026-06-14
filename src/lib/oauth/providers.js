@@ -641,7 +641,11 @@ const PROVIDERS = {
       }
       let result;
       try {
-        result = await svc.pollDeviceToken({ nonce, codeVerifier: verifier });
+        result = await svc.pollDeviceToken({
+          nonce,
+          codeVerifier: verifier,
+          proxyUrl: extraData?._qoderProxyUrl,
+        });
       } catch (err) {
         return {
           ok: false,
@@ -652,7 +656,9 @@ const PROVIDERS = {
         return { ok: false, data: { error: "authorization_pending" } };
       }
       // Best-effort profile lookup so we have a name/email to display.
-      const userInfo = await svc.fetchUserInfo(result.accessToken);
+      const userInfo = await svc.fetchUserInfo(result.accessToken, {
+        proxyUrl: extraData?._qoderProxyUrl,
+      });
       // expireTime is a Unix-ms timestamp from QoderService.parseExpiry,
       // which already falls back to "now + 30 days" when the upstream
       // omits expiry. Floor to a sane minimum (1 day) so a stale or
