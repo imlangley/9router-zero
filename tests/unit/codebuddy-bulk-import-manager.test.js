@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CodeBuddyBulkImportManager } from "../../src/lib/oauth/services/codebuddyBulkImportManager.js";
+import { getProviderConnections } from "../../src/models/index.js";
+
+vi.mock("../../src/models/index.js", () => ({
+  getProviderConnections: vi.fn(async () => []),
+  getProxyPools: vi.fn(async () => []),
+}));
 
 function createFakeBrowser() {
   const fakePage = {
@@ -44,6 +50,10 @@ async function waitFor(fn, timeoutMs = 3000) {
 }
 
 describe("CodeBuddyBulkImportManager", () => {
+  beforeEach(() => {
+    getProviderConnections.mockResolvedValue([]);
+  });
+
   it("runs bulk GSuite accounts through CodeBuddy polling and saves connections", async () => {
     const saved = [];
     const manager = new CodeBuddyBulkImportManager({
@@ -141,5 +151,63 @@ describe("CodeBuddyBulkImportManager", () => {
 
     expect(attempts).toBe(3);
     expect(finishedJob.summary.success).toBe(1);
+  });
+
+  it("skips existing CodeBuddy OAuth connections before launching a browser", async () => {
+    const browserLauncher = vi.fn(async () => createFakeBrowser());
+    getProviderConnections.mockResolvedValue([
+      {
+        id: "codebuddy-oauth-1",
+        provider: "codebuddy",
+        authType: "oauth",
+        email: "existing@example.com",
+        name: "Existing CodeBuddy",
+      },
+    ]);
+
+    const manager = new CodeBuddyBulkImportManager({ browserLauncher });
+    const startedJob = await manager.startJob({
+      accounts: [" existing@example.com |pw1"],
+      concurrency: 2,
+      generateApiKeys: true,
+    });
+
+    expect(startedJob.status).toBe("completed");
+    expect(startedJob.summary.skipped_duplicate).toBe(1);
+    expect(startedJob.accounts[0].status).toBe("skipped_duplicate");
+    expect(browserLauncher).not.toHaveBeenCalled();
+  });
+
+  it("flags emails that already own 9Router-generated CodeBuddy keys as duplicates before any worker runs", async () => {
+    const browserLauncher = vi.fn(async () => createFakeBrowser());
+    getProviderConnections.mockResolvedValue([
+      {
+        id: "old-api-conn-1",
+        provider: "codebuddy",
+        authType: "apikey",
+        email: "replace@example.com",
+        name: "9r-replace-old",
+        apiKey: "ck_old_secret",
+        providerSpecificData: {
+          credentialKind: "codebuddy_api_key",
+          automation: "apikey-generated",
+          apiKeyId: "ck_old_key",
+          apiKeyName: "9r-replace-old",
+          loginEmail: "replace@example.com",
+        },
+      },
+    ]);
+
+    const manager = new CodeBuddyBulkImportManager({ browserLauncher });
+    const startedJob = await manager.startJob({
+      accounts: [" replace@example.com |pw1"],
+      concurrency: 2,
+      generateApiKeys: true,
+    });
+
+    expect(startedJob.status).toBe("completed");
+    expect(startedJob.summary.skipped_duplicate).toBe(1);
+    expect(startedJob.accounts[0].status).toBe("skipped_duplicate");
+    expect(browserLauncher).not.toHaveBeenCalled();
   });
 });

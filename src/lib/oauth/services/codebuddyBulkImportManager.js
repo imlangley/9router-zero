@@ -5,8 +5,10 @@ import {
   KiroBulkImportManager,
   buildLookupResponse,
   createFreshContext,
+  pickAutomationProxy,
   parseKiroBulkAccounts,
 } from "./kiroBulkImportManager.js";
+import { classifyBulkAccountDuplicates } from "./bulkAccountDuplicateDetection.js";
 import {
   runGoogleAccountAutomation,
   handleCodeBuddyRegionPage,
@@ -27,35 +29,6 @@ const CODEBUDDY_POLL_TIMEOUT_MS = 15 * 60_000;
 const CODEBUDDY_POLL_INTERVAL_MS = 5_000;
 const CODEBUDDY_MAX_TRANSIENT_POLL_ERRORS = 6;
 const CODEBUDDY_COOKIE_DOMAINS = new Set(["codebuddy.ai", "www.codebuddy.ai"]);
-
-function normalizeEmail(email) {
-  return String(email || "").trim().toLowerCase();
-}
-
-function isKnownGeneratedCodeBuddyApiKeyConnection(connection) {
-  if (!connection || connection.provider !== CODEBUDDY_PROVIDER_ID || connection.authType !== "apikey") {
-    return false;
-  }
-
-  const providerData = connection.providerSpecificData || {};
-  const keyId = providerData.apiKeyId || connection.apiKey || connection.accessToken || "";
-  const keyName = providerData.apiKeyName || connection.name || "";
-  return providerData.credentialKind === "codebuddy_api_key"
-    && providerData.automation === "apikey-generated"
-    && typeof keyId === "string"
-    && keyId.startsWith("ck_")
-    && typeof keyName === "string"
-    && keyName.startsWith("9r-");
-}
-
-function getKnownGeneratedCodeBuddyKeyId(connection) {
-  if (!isKnownGeneratedCodeBuddyApiKeyConnection(connection)) return null;
-  const providerData = connection.providerSpecificData || {};
-  const keyId = providerData.apiKeyId || connection.apiKey || connection.accessToken || "";
-  if (typeof keyId !== "string") return null;
-  const normalized = keyId.trim();
-  return normalized.startsWith("ck_") ? normalized : null;
-}
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -331,64 +304,27 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     this.generateApiKeys = generateApiKeys;
   }
 
-  async startJob({ accounts, concurrency, generateApiKeys }) {
-    const job = await super.startJob({ accounts, concurrency });
-    const internalJob = this.jobs.get(job.jobId) || job;
-    if (generateApiKeys) {
-      internalJob.generateApiKeys = true;
-    }
+  async startJob({ accounts, concurrency, generateApiKeys, automationProxy }) {
+    return super.startJob({
+      accounts,
+      concurrency,
+      automationProxy,
+      extraJobFields: { generateApiKeys: Boolean(generateApiKeys) },
+    });
+  }
 
-    try {
-      const { getProviderConnections } = await import("../../../models/index.js");
-      const allConnections = await getProviderConnections();
-      const connectionsByEmail = new Map();
-      for (const connection of allConnections) {
-        if (connection?.provider !== CODEBUDDY_PROVIDER_ID || !connection.email) continue;
-        const emailKey = normalizeEmail(connection.email);
-        if (!emailKey) continue;
-        const matches = connectionsByEmail.get(emailKey) || [];
-        matches.push(connection);
-        connectionsByEmail.set(emailKey, matches);
+  async prepareBulkAccounts(parsed, { createdAt } = {}) {
+    const decisions = await classifyBulkAccountDuplicates({ providerId: CODEBUDDY_PROVIDER_ID, accounts: parsed });
+    return parsed.map((account, index) => {
+      const prepared = this.buildAccountState(account, createdAt, decisions[index]);
+      if (decisions[index]?._oldConnectionIds || decisions[index]?.oldConnectionIds) {
+        prepared._oldConnectionIds = decisions[index]._oldConnectionIds || decisions[index].oldConnectionIds || [];
       }
-
-      let skipped = 0;
-      for (const account of internalJob.accounts) {
-        if (account.status !== "queued") continue;
-        const emailKey = normalizeEmail(account.email);
-        const existingConnections = emailKey ? connectionsByEmail.get(emailKey) || [] : [];
-        const replaceableConnections = existingConnections.filter(isKnownGeneratedCodeBuddyApiKeyConnection);
-        const blockingConnections = existingConnections.filter((connection) => !isKnownGeneratedCodeBuddyApiKeyConnection(connection));
-
-        if (replaceableConnections.length > 0) {
-          account._oldConnectionIds = replaceableConnections.map((connection) => connection.id).filter(Boolean);
-          account._oldApiKeyIds = replaceableConnections
-            .map(getKnownGeneratedCodeBuddyKeyId)
-            .filter(Boolean);
-          this.setAccountStep(
-            account,
-            "will_replace_generated_key",
-            `Existing 9Router-generated CodeBuddy key found; will replace ${account._oldApiKeyIds.length || account._oldConnectionIds.length} old key(s)`
-          );
-        }
-
-        if (emailKey && blockingConnections.length > 0) {
-          this.finalizeAccount(account, "skipped_duplicate", {
-            error: "Email already has a CodeBuddy connection",
-            step: "skipped_duplicate",
-            message: "Skipped: a manual/OAuth CodeBuddy connection already exists for this email",
-          });
-          skipped += 1;
-        }
+      if (decisions[index]?._oldApiKeyIds || decisions[index]?.oldApiKeyIds) {
+        prepared._oldApiKeyIds = decisions[index]._oldApiKeyIds || decisions[index].oldApiKeyIds || [];
       }
-
-      if (skipped > 0) {
-        await this.persistJobSnapshot(internalJob, { forcePreview: true });
-      }
-    } catch (error) {
-      console.warn("[CodeBuddyBulkImport] dedup pre-check failed:", error.message);
-    }
-
-    return job;
+      return prepared;
+    });
   }
 
   async _generateAndSaveApiKey(context, account, job, email, page = null) {
@@ -456,7 +392,14 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
       return null;
     }
 
-    this.setAccountStep(account, "saving_api_key", `Saving API key ${keyResult.keyId}`);
+    const isTrialReadyForRouting = trialReady && billingOpened;
+    this.setAccountStep(
+      account,
+      "saving_api_key",
+      isTrialReadyForRouting
+        ? `Saving API key ${keyResult.keyId}`
+        : `Saving API key ${keyResult.keyId} as inactive because trial/billing is not ready`
+    );
     await this.persistJobSnapshot(job, { forcePreview: true });
 
     const webCookie = await captureCodeBuddyWebCookie(context);
@@ -474,8 +417,9 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
         automation: "apikey-generated",
         credentialKind: "codebuddy_api_key",
         credentialSource: account._oauthConnectionId ? "oauth_then_apikey" : "restricted_cookie_apikey",
-        routingAuthHeader: "bearer",
+        routingAuthHeader: "bearer+x-api-key",
         routingEndpoint: "https://www.codebuddy.ai/v2/chat/completions",
+        routingDisabledReason: isTrialReadyForRouting ? null : "trial_not_activated",
         apiKeyId: keyResult.keyId,
         apiKeyName: keyResult.name,
         apiKeyExpiresAt: keyResult.expiresAt,
@@ -492,7 +436,13 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
             }
           : {}),
       },
-      testStatus: "active",
+      isActive: isTrialReadyForRouting,
+      testStatus: isTrialReadyForRouting ? "active" : "unavailable",
+      lastError: isTrialReadyForRouting
+        ? null
+        : `CodeBuddy trial is not activated; not routing this key. ${trialFailureSummary}`,
+      errorCode: isTrialReadyForRouting ? null : 14017,
+      lastErrorAt: isTrialReadyForRouting ? null : new Date().toISOString(),
     });
 
     const oldConnectionIds = Array.isArray(account._oldConnectionIds) ? [...new Set(account._oldConnectionIds)] : [];
@@ -613,11 +563,18 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
       return;
     }
 
-    const { context, page } = await createFreshContext(job.browser);
+    const proxyEntry = pickAutomationProxy(job, account);
+    const { context, page } = await createFreshContext(job.browser, proxyEntry);
     account.runtimeSession = { context, page };
 
     try {
-      this.setAccountStep(account, "preparing_worker", `Worker ${workerId} is preparing a browser context`);
+      this.setAccountStep(
+        account,
+        "preparing_worker",
+        proxyEntry
+          ? `Worker ${workerId} is preparing a browser context via proxy ${proxyEntry.name}`
+          : `Worker ${workerId} is preparing a browser context`
+      );
       await this.persistJobSnapshot(job, { forcePreview: true });
 
       this.setAccountStep(account, "requesting_codebuddy_state", "Requesting CodeBuddy OAuth state");

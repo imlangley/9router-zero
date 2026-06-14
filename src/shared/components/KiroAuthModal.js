@@ -37,7 +37,7 @@ function formatClock(value) {
 }
 
 function groupAccountsByStatus(accounts = []) {
-  const order = ["running", "queued", "needs_manual", "success", "failed", "failed_invalid_credentials", "failed_exchange", "failed_timeout", "cancelled"];
+  const order = ["running", "queued", "needs_manual", "success", "skipped_duplicate", "skipped_duplicate_input", "failed", "failed_invalid_credentials", "failed_exchange", "failed_timeout", "cancelled"];
   const grouped = new Map();
 
   accounts.forEach((account) => {
@@ -56,6 +56,8 @@ function getStatusPanelClasses(status) {
     queued: "border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900/20",
     running: "border-blue-200 bg-blue-50/80 dark:border-blue-900/50 dark:bg-blue-950/20",
     success: "border-green-200 bg-green-50/80 dark:border-green-900/50 dark:bg-green-950/20",
+    skipped_duplicate: "border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900/20",
+    skipped_duplicate_input: "border-slate-200 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-900/20",
     failed: "border-red-200 bg-red-50/80 dark:border-red-900/50 dark:bg-red-950/20",
     failed_invalid_credentials: "border-red-200 bg-red-50/80 dark:border-red-900/50 dark:bg-red-950/20",
     failed_exchange: "border-red-200 bg-red-50/80 dark:border-red-900/50 dark:bg-red-950/20",
@@ -85,6 +87,8 @@ function AccountStatusBadge({ status }) {
     queued: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200",
     running: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
     success: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+    skipped_duplicate: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200",
+    skipped_duplicate_input: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200",
     failed: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
     failed_invalid_credentials: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
     failed_exchange: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
@@ -310,6 +314,7 @@ export default function KiroAuthModal({
       ["Queued", activeJob.summary.queued],
       ["Running", activeJob.summary.running],
       ["Success", activeJob.summary.success],
+      ["Skipped", activeJob.summary.skipped || 0],
       ["Failed", activeJob.summary.failed],
       ["Manual", activeJob.summary.needs_manual],
     ];

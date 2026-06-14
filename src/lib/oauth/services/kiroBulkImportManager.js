@@ -4,6 +4,9 @@ import path from "node:path";
 import { DATA_DIR } from "../../dataDir.js";
 import { KiroService } from "./kiro.js";
 import { createKiroCallbackMonitor, runKiroGoogleAutomation } from "./kiroGoogleAutomation.js";
+import { getSettings } from "../../localDb.js";
+import { getProxyPools } from "../../../models/index.js";
+import { classifyBulkAccountDuplicates, BULK_ACCOUNT_SKIP_STATUSES } from "./bulkAccountDuplicateDetection.js";
 
 export const KIRO_BULK_IMPORT_DEFAULT_CONCURRENCY = 4;
 export const KIRO_BULK_IMPORT_MIN_CONCURRENCY = 1;
@@ -11,6 +14,8 @@ export const KIRO_BULK_IMPORT_MAX_CONCURRENCY = 8;
 
 const TERMINAL_ACCOUNT_STATUSES = new Set([
   "success",
+  "skipped_duplicate",
+  "skipped_duplicate_input",
   "failed",
   "failed_invalid_credentials",
   "failed_exchange",
@@ -28,6 +33,10 @@ const RECENT_TERMINAL_JOB_WINDOW_MS = 30 * 60_000;
 const KIRO_BULK_IMPORT_DIR = path.join(DATA_DIR, "kiro-bulk-import");
 const KIRO_BULK_IMPORT_META_FILE = path.join(KIRO_BULK_IMPORT_DIR, "meta.json");
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "needs_manual"]);
+const PLAYWRIGHT_PROXY_POOL_TYPES = new Set(["http", "https", "socks", "socks4", "socks5"]);
+const PLAYWRIGHT_CACHE_DIR = path.join(DATA_DIR, "..", ".cache", "ms-playwright");
+const PLAYWRIGHT_TMP_DIR = path.join(DATA_DIR, "..", ".cache", "tmp");
+const PLAYWRIGHT_LIB_DIR = path.join(DATA_DIR, "..", ".playwright-libs");
 
 function nowIso() {
   return new Date().toISOString();
@@ -75,6 +84,123 @@ function clampConcurrency(value) {
   return Math.min(KIRO_BULK_IMPORT_MAX_CONCURRENCY, Math.max(KIRO_BULK_IMPORT_MIN_CONCURRENCY, parsed));
 }
 
+function normalizeString(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+function normalizeProxyServer(proxyUrl) {
+  const raw = normalizeString(proxyUrl);
+  if (!raw) return "";
+  try {
+    new URL(raw);
+    return raw;
+  } catch {
+    return `http://${raw}`;
+  }
+}
+
+function toPlaywrightProxyConfig(proxyUrl) {
+  const server = normalizeProxyServer(proxyUrl);
+  if (!server) return null;
+
+  try {
+    const parsed = new URL(server);
+    const username = decodeURIComponent(parsed.username || "");
+    const password = decodeURIComponent(parsed.password || "");
+    parsed.username = "";
+    parsed.password = "";
+
+    return {
+      server: parsed.toString(),
+      ...(username ? { username } : {}),
+      ...(password ? { password } : {}),
+    };
+  } catch {
+    return { server };
+  }
+}
+
+function isPlaywrightProxyPool(pool) {
+  if (!pool || pool.isActive !== true) return false;
+  const proxyUrl = normalizeString(pool.proxyUrl);
+  if (!proxyUrl) return false;
+  const type = normalizeString(pool.type || "http").toLowerCase();
+  return PLAYWRIGHT_PROXY_POOL_TYPES.has(type);
+}
+
+function normalizeAutomationProxySelection(selection = {}) {
+  const mode = normalizeString(selection.mode || "active-round-robin");
+  const proxyPoolId = normalizeString(selection.proxyPoolId);
+  if (["none", "profile", "selected", "active-round-robin"].includes(mode)) {
+    return { mode, proxyPoolId };
+  }
+  return { mode: "active-round-robin", proxyPoolId };
+}
+
+async function resolveAutomationProxyOptions(selection = {}) {
+  const normalizedSelection = normalizeAutomationProxySelection(selection);
+
+  if (normalizedSelection.mode === "none") {
+    return { source: "none", proxyPools: [], fallbackProxy: null };
+  }
+
+  try {
+    const pools = await getProxyPools({ isActive: true });
+    const proxyPools = pools
+      .filter(isPlaywrightProxyPool)
+      .filter((pool) => normalizedSelection.mode !== "selected" || pool.id === normalizedSelection.proxyPoolId)
+      .map((pool) => ({
+        id: pool.id,
+        name: pool.name || pool.id,
+        proxy: toPlaywrightProxyConfig(pool.proxyUrl),
+      }))
+      .filter((pool) => pool.proxy?.server);
+
+    if (proxyPools.length > 0 && normalizedSelection.mode !== "profile") {
+      return {
+        source: normalizedSelection.mode === "selected" ? "selected-proxy-pool" : "proxy-pool",
+        proxyPools,
+        fallbackProxy: null,
+      };
+    }
+  } catch (error) {
+    console.warn("[BulkImport] Failed to load proxy pools for OAuth automation:", error.message);
+  }
+
+  try {
+    const settings = await getSettings();
+    if (settings?.outboundProxyEnabled === true) {
+      const proxy = toPlaywrightProxyConfig(settings.outboundProxyUrl);
+      if (proxy?.server) {
+        return {
+          source: "profile-outbound-proxy",
+          proxyPools: [],
+          fallbackProxy: {
+            id: "profile-outbound-proxy",
+            name: "Profile outbound proxy",
+            proxy,
+          },
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("[BulkImport] Failed to load profile outbound proxy for OAuth automation:", error.message);
+  }
+
+  return { source: "none", proxyPools: [], fallbackProxy: null };
+}
+
+export function pickAutomationProxy(job, account) {
+  const proxyOptions = job?.automationProxyOptions;
+  const pools = proxyOptions?.proxyPools || [];
+  if (pools.length > 0) {
+    const line = Number.isFinite(Number(account?.line)) ? Number(account.line) : 1;
+    return pools[Math.max(0, line - 1) % pools.length];
+  }
+  return proxyOptions?.fallbackProxy || null;
+}
+
 export function parseKiroBulkAccounts(accounts = []) {
   const lines = Array.isArray(accounts) ? accounts : [];
   const parsed = [];
@@ -115,13 +241,22 @@ function getFailedCount(accounts) {
   )).length;
 }
 
+function getSkippedCount(accounts) {
+  return accounts.filter((account) => BULK_ACCOUNT_SKIP_STATUSES.has(account.status)).length;
+}
+
 function buildSummary(accounts) {
+  const skippedDuplicate = accounts.filter((account) => account.status === "skipped_duplicate").length;
+  const skippedDuplicateInput = accounts.filter((account) => account.status === "skipped_duplicate_input").length;
   return {
     total: accounts.length,
     queued: accounts.filter((account) => account.status === "queued").length,
     running: accounts.filter((account) => account.status === "running").length,
     success: accounts.filter((account) => account.status === "success").length,
     failed: getFailedCount(accounts),
+    skipped: getSkippedCount(accounts),
+    skipped_duplicate: skippedDuplicate,
+    skipped_duplicate_input: skippedDuplicateInput,
     needs_manual: accounts.filter((account) => account.status === "needs_manual").length,
   };
 }
@@ -238,6 +373,17 @@ export function buildLookupResponse(job, extras = {}) {
 }
 
 async function defaultBrowserLauncher() {
+  fs.mkdirSync(PLAYWRIGHT_TMP_DIR, { recursive: true });
+  process.env.PLAYWRIGHT_BROWSERS_PATH ||= PLAYWRIGHT_CACHE_DIR;
+  process.env.TMPDIR ||= PLAYWRIGHT_TMP_DIR;
+  if (fs.existsSync(PLAYWRIGHT_LIB_DIR)) {
+    const existing = process.env.LD_LIBRARY_PATH || "";
+    const paths = existing.split(path.delimiter).filter(Boolean);
+    if (!paths.includes(PLAYWRIGHT_LIB_DIR)) {
+      process.env.LD_LIBRARY_PATH = [PLAYWRIGHT_LIB_DIR, ...paths].join(path.delimiter);
+    }
+  }
+
   const { chromium } = await import("playwright");
 
   return await chromium.launch({
@@ -250,8 +396,10 @@ async function defaultSocialExchange(args) {
   return exchangeAndSaveKiroSocialConnection(args);
 }
 
-export async function createFreshContext(browser) {
-  const context = await browser.newContext();
+export async function createFreshContext(browser, proxyEntry = null) {
+  const context = await browser.newContext({
+    ...(proxyEntry?.proxy ? { proxy: proxyEntry.proxy } : {}),
+  });
   const page = await context.newPage();
   return { context, page };
 }
@@ -318,7 +466,7 @@ export class KiroBulkImportManager {
     this.latestJobId = readPersistedLatestJobId(this.metaFile);
   }
 
-  async startJob({ accounts, concurrency }) {
+  async startJob({ accounts, concurrency, automationProxy, extraJobFields = {} }) {
     const { parsed, invalidLines } = parseKiroBulkAccounts(accounts);
     if (!parsed.length) {
       const error = invalidLines.length > 0
@@ -336,6 +484,7 @@ export class KiroBulkImportManager {
 
     const jobId = randomUUID();
     const createdAt = nowIso();
+    const preparedAccounts = await this.prepareBulkAccounts(parsed, { createdAt });
     const job = {
       jobId,
       status: "running",
@@ -346,33 +495,60 @@ export class KiroBulkImportManager {
       error: null,
       cancelRequested: false,
       browser: null,
+      automationProxySelection: normalizeAutomationProxySelection(automationProxy),
+      automationProxyOptions: null,
       nextIndex: 0,
       manualFollowups: new Set(),
       persistPromise: Promise.resolve(),
       lastPreview: null,
       lastPreviewCapturedAt: 0,
-      accounts: parsed.map((account) => ({
-        line: account.line,
-        email: account.email,
-        password: account.password,
-        status: "queued",
-        error: null,
-        connectionId: null,
-        workerId: null,
-        manualSession: null,
-        runtimeSession: null,
-        currentStep: "queued",
-        updatedAt: createdAt,
-        logs: [createLogEntry("queued", "Queued and waiting for an available worker")],
-      })),
+      accounts: preparedAccounts,
+      ...extraJobFields,
     };
 
     this.jobs.set(jobId, job);
     this.latestJobId = jobId;
     writePersistedLatestJobId(jobId, this.metaFile);
     await this.persistJobSnapshot(job, { forcePreview: false });
-    void this.runJob(jobId);
+    if (this.getQueuedAccounts(job).length === 0) {
+      job.status = "completed";
+      job.finishedAt = nowIso();
+      await this.persistJobSnapshot(job, { forcePreview: true });
+    } else {
+      void this.runJob(jobId);
+    }
     return sanitizeJob(job);
+  }
+
+  buildAccountState(account, createdAt, decision = { status: "queued" }) {
+    const status = decision.status || "queued";
+    const isSkipped = BULK_ACCOUNT_SKIP_STATUSES.has(status);
+    return {
+      line: account.line,
+      email: account.email,
+      password: isSkipped ? undefined : account.password,
+      status,
+      error: decision.error || null,
+      connectionId: null,
+      workerId: null,
+      manualSession: null,
+      runtimeSession: null,
+      currentStep: decision.step || status,
+      updatedAt: createdAt,
+      existingConnectionIds: decision.existingConnectionIds || null,
+      existingConnectionNames: decision.existingConnectionNames || null,
+      duplicateOfLine: decision.duplicateOfLine || null,
+      logs: [createLogEntry(decision.step || status, decision.message || "Queued and waiting for an available worker")],
+    };
+  }
+
+  async prepareBulkAccounts(parsed, { createdAt } = {}) {
+    const decisions = await classifyBulkAccountDuplicates({ providerId: "kiro", accounts: parsed });
+    return parsed.map((account, index) => this.buildAccountState(account, createdAt, decisions[index]));
+  }
+
+  getQueuedAccounts(job) {
+    return (job?.accounts || []).filter((account) => account.status === "queued");
   }
 
   getJob(jobId) {
@@ -626,12 +802,19 @@ export class KiroBulkImportManager {
 
     const kiroService = this.kiroServiceFactory();
     const socialAuth = kiroService.createSocialAuthorization("google");
-    const { context, page } = await createFreshContext(job.browser);
+    const proxyEntry = pickAutomationProxy(job, account);
+    const { context, page } = await createFreshContext(job.browser, proxyEntry);
     const callbackPromise = createKiroCallbackMonitor(context, page);
     account.runtimeSession = { context, page };
 
     try {
-      this.setAccountStep(account, "preparing_worker", `Worker ${workerId} is preparing a browser context`);
+      this.setAccountStep(
+        account,
+        "preparing_worker",
+        proxyEntry
+          ? `Worker ${workerId} is preparing a browser context via proxy ${proxyEntry.name}`
+          : `Worker ${workerId} is preparing a browser context`
+      );
       await this.persistJobSnapshot(job, { forcePreview: true });
       const automationResult = await this.googleAutomation({
         page,
@@ -727,6 +910,14 @@ export class KiroBulkImportManager {
     if (!job) return;
 
     try {
+      const queuedAccounts = this.getQueuedAccounts(job);
+      if (queuedAccounts.length === 0) {
+        job.status = "completed";
+        await this.persistJobSnapshot(job, { forcePreview: true });
+        return;
+      }
+
+      job.automationProxyOptions = await resolveAutomationProxyOptions(job.automationProxySelection);
       job.browser = await this.browserLauncher();
       job.accounts.forEach((account) => {
         if (account.status === "queued" && (account.logs || []).length === 1) {
@@ -734,7 +925,7 @@ export class KiroBulkImportManager {
         }
       });
       await this.persistJobSnapshot(job, { forcePreview: false });
-      const workerCount = Math.min(job.concurrency, Math.max(job.accounts.length, 1));
+      const workerCount = Math.min(job.concurrency, queuedAccounts.length);
       const workers = Array.from({ length: workerCount }, (_, index) => this.runWorker(job, index + 1));
 
       await Promise.allSettled(workers);

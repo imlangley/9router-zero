@@ -9,8 +9,10 @@ import Input from "./Input";
 import Modal from "./Modal";
 
 const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_PROXY_MODE = "active-round-robin";
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "needs_manual"]);
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const PLAYWRIGHT_PROXY_POOL_TYPES = new Set(["http", "https", "socks", "socks4", "socks5"]);
 
 function formatStepLabel(value) {
   return String(value || "waiting").replaceAll("_", " ");
@@ -25,6 +27,7 @@ function formatClock(value) {
 
 function getStatusVariant(status) {
   if (status === "success" || status === "completed") return "success";
+  if (status === "skipped_duplicate" || status === "skipped_duplicate_input") return "default";
   if (status === "needs_manual") return "warning";
   if (status === "running" || status === "queued") return "info";
   if (status === "cancelled") return "default";
@@ -68,6 +71,9 @@ export default function BulkAccountAutomationModal({
   const completedRefreshJobsRef = useRef(new Set());
   const [bulkText, setBulkText] = useState("");
   const [concurrency, setConcurrency] = useState(String(DEFAULT_CONCURRENCY));
+  const [proxyPools, setProxyPools] = useState([]);
+  const [proxyMode, setProxyMode] = useState(DEFAULT_PROXY_MODE);
+  const [selectedProxyPoolId, setSelectedProxyPoolId] = useState("");
   const [activeJob, setActiveJob] = useState(null);
   const [error, setError] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -75,15 +81,29 @@ export default function BulkAccountAutomationModal({
 
   const runningJob = activeJob && ACTIVE_JOB_STATUSES.has(activeJob.status);
   const finishedJob = activeJob && TERMINAL_JOB_STATUSES.has(activeJob.status);
+  const playableProxyPools = useMemo(
+    () => proxyPools.filter((pool) => (
+      pool?.isActive === true
+      && PLAYWRIGHT_PROXY_POOL_TYPES.has(String(pool.type || "http").toLowerCase())
+    )),
+    [proxyPools]
+  );
 
   const groupedAccounts = useMemo(() => {
     const groups = new Map();
+    const order = ["running", "queued", "needs_manual", "success", "skipped_duplicate", "skipped_duplicate_input", "failed", "failed_restricted", "failed_invalid_credentials", "failed_exchange", "failed_timeout", "cancelled"];
     for (const account of activeJob?.accounts || []) {
       const key = account.status || "unknown";
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(account);
     }
-    return [...groups.entries()].map(([status, accounts]) => ({ status, accounts }));
+    const ordered = order
+      .filter((status) => groups.has(status))
+      .map((status) => ({ status, accounts: groups.get(status) }));
+    const remaining = [...groups.entries()]
+      .filter(([status]) => !order.includes(status))
+      .map(([status, accounts]) => ({ status, accounts }));
+    return [...ordered, ...remaining];
   }, [activeJob]);
 
   const activityItems = useMemo(() => (
@@ -93,6 +113,8 @@ export default function BulkAccountAutomationModal({
   const resetState = useCallback(() => {
     setBulkText("");
     setConcurrency(String(DEFAULT_CONCURRENCY));
+    setProxyMode(DEFAULT_PROXY_MODE);
+    setSelectedProxyPoolId("");
     setActiveJob(null);
     setError(null);
     setImporting(false);
@@ -142,6 +164,26 @@ export default function BulkAccountAutomationModal({
   }, [isOpen, provider, storageKey]);
 
   useEffect(() => {
+    if (!isOpen || activeJob) return;
+
+    let cancelled = false;
+    const loadProxyPools = async () => {
+      try {
+        const res = await fetch("/api/proxy-pools?isActive=true", { cache: "no-store" });
+        const data = await res.json();
+        if (!cancelled && res.ok) setProxyPools(data.proxyPools || []);
+      } catch {
+        if (!cancelled) setProxyPools([]);
+      }
+    };
+
+    void loadProxyPools();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeJob, isOpen]);
+
+  useEffect(() => {
     if (!isOpen || !activeJob?.jobId || finishedJob) return undefined;
 
     const interval = window.setInterval(async () => {
@@ -184,11 +226,15 @@ export default function BulkAccountAutomationModal({
       const res = await fetch(`/api/oauth/${provider}/bulk-import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accounts: lines,
-          concurrency: Number.parseInt(concurrency, 10) || DEFAULT_CONCURRENCY,
-          generateApiKeys: generateApiKeys || false,
-        }),
+          body: JSON.stringify({
+            accounts: lines,
+            concurrency: Number.parseInt(concurrency, 10) || DEFAULT_CONCURRENCY,
+            generateApiKeys: generateApiKeys || false,
+            automationProxy: {
+              mode: proxyMode,
+              proxyPoolId: proxyMode === "selected" ? selectedProxyPoolId : "",
+            },
+          }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -263,10 +309,11 @@ export default function BulkAccountAutomationModal({
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium">
+              <label htmlFor={`${provider}-bulk-accounts`} className="mb-2 block text-sm font-medium">
                 Bulk Accounts <span className="text-red-500">*</span>
               </label>
               <textarea
+                id={`${provider}-bulk-accounts`}
                 value={bulkText}
                 onChange={(event) => setBulkText(event.target.value)}
                 placeholder={"gmail1@example.com|password1\ngmail2@example.com|password2"}
@@ -278,8 +325,9 @@ export default function BulkAccountAutomationModal({
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium">Concurrent Workers</label>
+              <label htmlFor={`${provider}-bulk-concurrency`} className="mb-2 block text-sm font-medium">Concurrent Workers</label>
               <Input
+                id={`${provider}-bulk-concurrency`}
                 type="number"
                 min="1"
                 max="8"
@@ -290,6 +338,49 @@ export default function BulkAccountAutomationModal({
               <p className="mt-1 text-xs text-text-muted">
                 Default 4. Allowed range: 1 to 8 workers.
               </p>
+            </div>
+
+            <div className="rounded-xl border border-border bg-sidebar/60 p-4">
+              <label htmlFor={`${provider}-bulk-proxy-mode`} className="mb-2 block text-sm font-medium">OAuth Browser Proxy</label>
+              <select
+                id={`${provider}-bulk-proxy-mode`}
+                value={proxyMode}
+                onChange={(event) => setProxyMode(event.target.value)}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text-main focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                <option value="active-round-robin">Round-robin all active proxy pools</option>
+                <option value="selected">Use one selected proxy pool</option>
+                <option value="profile">Use profile outbound proxy</option>
+                <option value="none">No proxy / direct browser</option>
+              </select>
+
+              {proxyMode === "selected" && (
+                <select
+                  aria-label="Selected OAuth proxy pool"
+                  value={selectedProxyPoolId}
+                  onChange={(event) => setSelectedProxyPoolId(event.target.value)}
+                  className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text-main focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="">Select proxy pool</option>
+                  {playableProxyPools.map((pool) => (
+                    <option key={pool.id} value={pool.id}>{pool.name}</option>
+                  ))}
+                </select>
+              )}
+
+              <p className="mt-2 text-xs text-text-muted">
+                Default rotates browser OAuth workers across active HTTP/SOCKS proxy pools from /dashboard/proxy-pools. Vercel/Cloudflare/Deno relay pools are for runtime fetches and are skipped for Playwright browser login.
+              </p>
+              {proxyMode === "active-round-robin" && (
+                <p className="mt-1 text-xs text-text-muted">
+                  Available browser proxy pools: {playableProxyPools.length}. Accounts are assigned by line number for stable round-robin rotation.
+                </p>
+              )}
+              {proxyMode === "selected" && playableProxyPools.length === 0 && (
+                <p className="mt-1 text-xs text-amber-500">
+                  No active HTTP/SOCKS proxy pools found. Add one in /dashboard/proxy-pools or choose another mode.
+                </p>
+              )}
             </div>
           </>
         )}
@@ -497,7 +588,7 @@ export default function BulkAccountAutomationModal({
 
         <div className="flex gap-2">
           {!activeJob && (
-            <Button onClick={handleStartBulk} fullWidth disabled={importing || !bulkText.trim()}>
+            <Button onClick={handleStartBulk} fullWidth disabled={importing || !bulkText.trim() || (proxyMode === "selected" && !selectedProxyPoolId)}>
               {importing ? "Starting..." : "Start Bulk Login"}
             </Button>
           )}

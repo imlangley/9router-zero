@@ -31,6 +31,7 @@ export async function POST(request) {
       accounts,
       concurrency: body?.concurrency,
       generateApiKeys: body?.generateApiKeys === true,
+      automationProxy: body?.automationProxy,
     });
 
     return NextResponse.json({
