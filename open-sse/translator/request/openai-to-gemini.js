@@ -58,6 +58,23 @@ function openaiToGeminiBase(model, body, stream, signature = DEFAULT_THINKING_AG
     result.generationConfig.maxOutputTokens = body.max_tokens;
   }
 
+  // Forward reasoning/reasoning params → Gemini thinkingConfig
+  // Chat Completions: reasoning_effort (top-level string)
+  // Anthropic-style: thinking: { type: "enabled", budget_tokens: N }
+  if (body.reasoning_effort) {
+    const budgetMap = { low: 1024, medium: 8192, high: 32768, xhigh: 32768 };
+    const budget = budgetMap[body.reasoning_effort] || 8192;
+    result.generationConfig.thinkingConfig = {
+      thinkingBudget: budget,
+      include_thoughts: true
+    };
+  } else if (body.thinking?.type === "enabled" && body.thinking.budget_tokens) {
+    result.generationConfig.thinkingConfig = {
+      thinkingBudget: body.thinking.budget_tokens,
+      include_thoughts: true
+    };
+  }
+
   // Build tool_call_id -> name map
   const tcID2Name = {};
   if (body.messages && Array.isArray(body.messages)) {

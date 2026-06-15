@@ -29,6 +29,48 @@ export class KiroExecutor extends BaseExecutor {
   }
 
   transformRequest(model, body, stream, credentials) {
+    // Inject <thinking_mode>enabled</thinking_mode> into system prompt when
+    // client requests reasoning. Kiro only produces reasoningContentEvent
+    // when this marker is present in the system prompt.
+    const wantsReasoning = body.reasoning_effort
+      || body.reasoning?.effort
+      || (body.thinking?.type === "enabled")
+      || body._kiroExposeReasoning === true;
+
+    if (wantsReasoning) {
+      const result = { ...body, _kiroExposeReasoning: true };
+
+      // Inject thinking marker into system prompt
+      const THINKING_MARKER = "<thinking_mode>enabled</thinking_mode>";
+      if (Array.isArray(result.messages)) {
+        const sysIdx = result.messages.findIndex(m => m.role === "system");
+        if (sysIdx >= 0) {
+          const sysMsg = result.messages[sysIdx];
+          const existingText = typeof sysMsg.content === "string" ? sysMsg.content : "";
+          if (!existingText.includes(THINKING_MARKER)) {
+            result.messages = [...result.messages];
+            result.messages[sysIdx] = {
+              ...sysMsg,
+              content: existingText + "\n\n" + THINKING_MARKER
+            };
+          }
+        } else {
+          // No system message — add one with the thinking marker
+          result.messages = [
+            { role: "system", content: THINKING_MARKER },
+            ...result.messages
+          ];
+        }
+      }
+
+      // Clean up fields Kiro doesn't understand
+      delete result.reasoning_effort;
+      delete result.reasoning;
+      delete result.thinking;
+
+      return result;
+    }
+
     return body;
   }
 
