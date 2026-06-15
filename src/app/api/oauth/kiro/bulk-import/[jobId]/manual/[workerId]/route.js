@@ -15,9 +15,9 @@ export async function POST(_request, { params }) {
     return NextResponse.json(
       {
         error: result.error || "Manual session not found for this worker",
-        job: result.job,
+        ...(result.job ? { job: result.job } : {}),
       },
-      { status: 404 }
+      { status: result.job ? 400 : 404 }
     );
   }
 

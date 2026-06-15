@@ -583,7 +583,31 @@ export class KiroBulkImportManager {
 
   cancelJob(jobId) {
     const job = this.jobs.get(jobId);
-    if (!job) return readJsonFile(getJobFile(jobId, this.storageDir));
+    if (!job) {
+      // Job not in memory — try to restore from disk and mark as cancelled
+      const persisted = readJsonFile(getJobFile(jobId, this.storageDir));
+      if (!persisted) return null;
+
+      // Mark as cancelled in the persisted data and write back
+      persisted.cancelRequested = true;
+      if (persisted.status === "queued" || persisted.status === "running" || persisted.status === "needs_manual") {
+        persisted.status = "cancelled";
+        persisted.finishedAt = nowIso();
+      }
+      if (Array.isArray(persisted.accounts)) {
+        persisted.accounts.forEach((account) => {
+          if (account.status === "queued" || account.status === "running") {
+            account.status = "cancelled";
+          }
+          // Clear manual session refs — browser is gone after restart
+          if (account.manualSession) {
+            account.manualSession = null;
+          }
+        });
+      }
+      writeJsonFile(getJobFile(jobId, this.storageDir), persisted);
+      return persisted;
+    }
 
     job.cancelRequested = true;
     if (job.status === "queued") {
@@ -606,7 +630,18 @@ export class KiroBulkImportManager {
 
   async openManualSession(jobId, workerId) {
     const job = this.jobs.get(jobId);
-    if (!job) return null;
+    if (!job) {
+      // Job not in memory — browser sessions are gone after server restart.
+      // Return a clear error so the UI can show it instead of silently failing.
+      const persisted = readJsonFile(getJobFile(jobId, this.storageDir));
+      return {
+        ok: false,
+        error: persisted
+          ? "Server was restarted — browser sessions are no longer available. Please cancel this job and start a new bulk import."
+          : "Bulk import job not found",
+        job: persisted || null,
+      };
+    }
 
     const numericWorkerId = Number.parseInt(workerId, 10);
     const account = job.accounts.find((entry) => (
@@ -624,6 +659,17 @@ export class KiroBulkImportManager {
     }
 
     const opened = await revealBrowserWindow(account.manualSession.page);
+
+    if (!opened) {
+      // Browser window could not be revealed (headless server, no display, etc.)
+      // Return error so UI can inform the user instead of silently succeeding.
+      return {
+        ok: false,
+        error: "Manual browser session could not be opened — server is running headless (no display). Manual assist requires a local deployment with a visible browser. Consider cancelling this job and re-importing from a local machine.",
+        job: sanitizeJob(job),
+      };
+    }
+
     account.manualSession.opened = opened;
     account.manualSession.openedAt = opened
       ? (account.manualSession.openedAt || nowIso())
