@@ -548,7 +548,13 @@ function convertMessages(messages, tools, model) {
 export function buildKiroPayload(model, body, stream, credentials) {
   const messages = body.messages || [];
   const tools = body.tools || [];
-  const maxTokens = 32000;
+  // Use client-provided max_tokens / max_completion_tokens, fall back to 32000.
+  // Cap at 32000 to stay within Kiro/AWS CodeWhisperer limits.
+  const KIRO_MAX_TOKENS_CAP = 32000;
+  const clientMaxTokens = body.max_tokens || body.max_completion_tokens;
+  const maxTokens = clientMaxTokens
+    ? Math.min(Number(clientMaxTokens), KIRO_MAX_TOKENS_CAP)
+    : KIRO_MAX_TOKENS_CAP;
   const temperature = body.temperature;
   const topP = body.top_p;
 

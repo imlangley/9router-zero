@@ -6,6 +6,8 @@ import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 
 const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_PROXY_MODE = "active-round-robin";
+const PLAYWRIGHT_PROXY_POOL_TYPES = new Set(["http", "https", "socks", "socks4", "socks5"]);
 const BULK_JOB_STORAGE_KEY = "kiro-bulk-import-active-job";
 const JOB_SESSION_EXPIRED_MESSAGE = "Bulk import progress could not be restored. The previous job session was cleared.";
 
@@ -126,6 +128,9 @@ export default function KiroAuthModal({
   const [importMode, setImportMode] = useState("single-token");
   const [bulkText, setBulkText] = useState("");
   const [concurrency, setConcurrency] = useState(String(DEFAULT_CONCURRENCY));
+  const [proxyMode, setProxyMode] = useState(DEFAULT_PROXY_MODE);
+  const [selectedProxyPoolId, setSelectedProxyPoolId] = useState("");
+  const [proxyPools, setProxyPools] = useState([]);
   const [bulkResult, setBulkResult] = useState(null);
   const [activeJob, setActiveJob] = useState(null);
   const [error, setError] = useState(null);
@@ -153,6 +158,25 @@ export default function KiroAuthModal({
     setBulkResult(null);
     setError(null);
   }, [initialFlowKey, initialImportMode, initialSelectedMethod, isOpen]);
+
+  // Load proxy pools for bulk-account proxy selection
+  useEffect(() => {
+    if (!isOpen || effectiveImportMode !== "bulk-account") return;
+    let cancelled = false;
+    fetch("/api/proxy-pools?isActive=true", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((pools) => { if (!cancelled) setProxyPools(Array.isArray(pools) ? pools : []); })
+      .catch(() => { if (!cancelled) setProxyPools([]); });
+    return () => { cancelled = true; };
+  }, [isOpen, effectiveImportMode]);
+
+  const playableProxyPools = useMemo(
+    () => proxyPools.filter((pool) => (
+      pool?.isActive === true
+      && PLAYWRIGHT_PROXY_POOL_TYPES.has(String(pool.type || "http").toLowerCase())
+    )),
+    [proxyPools]
+  );
 
   useEffect(() => {
     if (effectiveSelectedMethod !== "import" || effectiveImportMode !== "single-token" || !isOpen) return;
@@ -430,6 +454,10 @@ export default function KiroAuthModal({
       body: JSON.stringify({
         accounts: lines,
         concurrency: Number.parseInt(concurrency, 10) || DEFAULT_CONCURRENCY,
+        automationProxy: {
+          mode: proxyMode,
+          proxyPoolId: proxyMode === "selected" ? selectedProxyPoolId : "",
+        },
       }),
     });
 
@@ -932,6 +960,49 @@ export default function KiroAuthModal({
                         Default 4. Allowed range: 1 to 8 workers.
                       </p>
                     </div>
+
+                    <div className="rounded-xl border border-border bg-sidebar/60 p-4">
+                      <label htmlFor="kiro-bulk-proxy-mode" className="mb-2 block text-sm font-medium">OAuth Browser Proxy</label>
+                      <select
+                        id="kiro-bulk-proxy-mode"
+                        value={proxyMode}
+                        onChange={(e) => setProxyMode(e.target.value)}
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text-main focus:outline-none focus:ring-1 focus:ring-primary"
+                      >
+                        <option value="active-round-robin">Round-robin all active proxy pools</option>
+                        <option value="selected">Use one selected proxy pool</option>
+                        <option value="profile">Use profile outbound proxy</option>
+                        <option value="none">No proxy / direct browser</option>
+                      </select>
+
+                      {proxyMode === "selected" && (
+                        <select
+                          aria-label="Selected OAuth proxy pool"
+                          value={selectedProxyPoolId}
+                          onChange={(e) => setSelectedProxyPoolId(e.target.value)}
+                          className="mt-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text-main focus:outline-none focus:ring-1 focus:ring-primary"
+                        >
+                          <option value="">Select proxy pool</option>
+                          {playableProxyPools.map((pool) => (
+                            <option key={pool.id} value={pool.id}>{pool.name}</option>
+                          ))}
+                        </select>
+                      )}
+
+                      <p className="mt-2 text-xs text-text-muted">
+                        Default rotates browser OAuth workers across active HTTP/SOCKS proxy pools from /dashboard/proxy-pools.
+                      </p>
+                      {proxyMode === "active-round-robin" && (
+                        <p className="mt-1 text-xs text-text-muted">
+                          Available browser proxy pools: {playableProxyPools.length}. Accounts are assigned by line number for stable round-robin rotation.
+                        </p>
+                      )}
+                      {proxyMode === "selected" && playableProxyPools.length === 0 && (
+                        <p className="mt-1 text-xs text-amber-500">
+                          No active HTTP/SOCKS proxy pools found. Add one in /dashboard/proxy-pools or choose another mode.
+                        </p>
+                      )}
+                    </div>
                   </>
                 )}
 
@@ -1136,7 +1207,7 @@ export default function KiroAuthModal({
 
                 <div className="flex gap-2">
                   {!activeJob && (
-                    <Button onClick={handleBulkImport} fullWidth disabled={importing || !bulkText.trim()}>
+                    <Button onClick={handleBulkImport} fullWidth disabled={importing || !bulkText.trim() || (proxyMode === "selected" && !selectedProxyPoolId)}>
                       {importing ? "Starting..." : "Start Bulk Import"}
                     </Button>
                   )}
