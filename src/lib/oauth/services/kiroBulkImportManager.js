@@ -803,19 +803,57 @@ export class KiroBulkImportManager {
     const kiroService = this.kiroServiceFactory();
     const socialAuth = kiroService.createSocialAuthorization("google");
     const proxyEntry = pickAutomationProxy(job, account);
-    const { context, page } = await createFreshContext(job.browser, proxyEntry);
-    const callbackPromise = createKiroCallbackMonitor(context, page);
-    account.runtimeSession = { context, page };
+
+    // Try with proxy first, fall back to no-proxy if navigation times out
+    let context, page, callbackPromise, usedProxy;
+    const tryWithProxy = async (proxy) => {
+      const ctx = await createFreshContext(job.browser, proxy);
+      const cbPromise = createKiroCallbackMonitor(ctx.context, ctx.page);
+      return { context: ctx.context, page: ctx.page, callbackPromise: cbPromise };
+    };
 
     try {
-      this.setAccountStep(
-        account,
-        "preparing_worker",
-        proxyEntry
-          ? `Worker ${workerId} is preparing a browser context via proxy ${proxyEntry.name}`
-          : `Worker ${workerId} is preparing a browser context`
-      );
-      await this.persistJobSnapshot(job, { forcePreview: true });
+      if (proxyEntry) {
+        this.setAccountStep(account, "preparing_worker",
+          `Worker ${workerId} is preparing a browser context via proxy ${proxyEntry.name}`);
+        await this.persistJobSnapshot(job, { forcePreview: true });
+
+        try {
+          const result = await tryWithProxy(proxyEntry);
+          context = result.context;
+          page = result.page;
+          callbackPromise = result.callbackPromise;
+          usedProxy = proxyEntry;
+        } catch (proxyErr) {
+          // Proxy failed (timeout, connection refused, etc.) — retry without proxy
+          const isTimeout = proxyErr?.name === "TimeoutError" || proxyErr?.message?.includes("Timeout");
+          const isNetwork = isTimeout || proxyErr?.message?.includes("net::") || proxyErr?.message?.includes("ERR_");
+          if (isNetwork) {
+            this.setAccountStep(account, "proxy_fallback",
+              `Proxy ${proxyEntry.name} failed (${proxyErr.message?.slice(0, 80)}), retrying without proxy`);
+            await this.persistJobSnapshot(job, { forcePreview: true });
+            const result = await tryWithProxy(null);
+            context = result.context;
+            page = result.page;
+            callbackPromise = result.callbackPromise;
+            usedProxy = null;
+          } else {
+            throw proxyErr;
+          }
+        }
+      } else {
+        this.setAccountStep(account, "preparing_worker",
+          `Worker ${workerId} is preparing a browser context`);
+        await this.persistJobSnapshot(job, { forcePreview: true });
+        const result = await tryWithProxy(null);
+        context = result.context;
+        page = result.page;
+        callbackPromise = result.callbackPromise;
+        usedProxy = null;
+      }
+
+      account.runtimeSession = { context, page };
+
       const automationResult = await this.googleAutomation({
         page,
         authUrl: socialAuth.authUrl,

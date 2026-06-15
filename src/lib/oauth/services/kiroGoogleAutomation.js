@@ -1024,7 +1024,23 @@ export async function runGoogleAccountAutomation({
   };
 
   reportStep(openingStep, openingMessage);
-  await page.goto(authUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  // Kiro auth server (prod.us-east-1.auth.desktop.kiro.dev) can be slow through
+  // proxies, especially non-US ones. Use 120s timeout with 1 retry.
+  let gotoError = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await page.goto(authUrl, { waitUntil: "domcontentloaded", timeout: 120_000 });
+      gotoError = null;
+      break;
+    } catch (err) {
+      gotoError = err;
+      if (attempt === 0) {
+        reportStep("retrying_navigation", `Page navigation timed out, retrying (${attempt + 1}/2)...`);
+        await page.waitForTimeout(2_000);
+      }
+    }
+  }
+  if (gotoError) throw gotoError;
   await page.waitForTimeout(2_000);
 
   await handleProviderLoginGate(page, reportStep);
