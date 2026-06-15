@@ -310,6 +310,23 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
   if (body.max_tokens !== undefined) result.max_tokens = body.max_tokens;
   if (body.top_p !== undefined) result.top_p = body.top_p;
 
+  // Forward reasoning/reasoning params from Chat Completions → Responses API
+  // Chat Completions: reasoning_effort (top-level string) or reasoning.effort (nested)
+  // Responses API: reasoning: { effort, summary }
+  if (body.reasoning_effort && !result.reasoning) {
+    result.reasoning = { effort: body.reasoning_effort, summary: "auto" };
+  } else if (body.reasoning?.effort && !result.reasoning) {
+    result.reasoning = { effort: body.reasoning.effort, summary: body.reasoning.summary || "auto" };
+  }
+
+  // Forward thinking config (Anthropic-style) → Responses reasoning
+  if (body.thinking?.type === "enabled" && !result.reasoning) {
+    const budgetToEffort = { 2048: "low", 4096: "low", 8192: "medium", 16384: "high", 32768: "high" };
+    const budget = body.thinking.budget_tokens || 8192;
+    const effort = budgetToEffort[budget] || (budget >= 16384 ? "high" : budget >= 4096 ? "medium" : "low");
+    result.reasoning = { effort, summary: "auto" };
+  }
+
   return result;
 }
 

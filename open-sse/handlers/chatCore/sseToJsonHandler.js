@@ -211,11 +211,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, pr
       status: "success"
     }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
 
-    // Strip reasoning_content only when content is non-empty.
-    // When content is empty (e.g. thinking models that used all tokens for reasoning),
-    // reasoning_content is the only useful output and must be preserved.
-    // Previously this was unconditional, which broke Qwen3.5, Claude extended thinking, etc.
-    if (parsed?.choices) {
+    // Strip reasoning_content unless client opts in via x-include-reasoning header.
+    // Without opt-in: strip when content is non-empty (backward compat — some clients
+    // break on non-standard fields). When content is empty (thinking-only models),
+    // reasoning_content is preserved as the only useful output.
+    // With opt-in (x-include-reasoning: true): always preserve reasoning_content.
+    const includeReasoning = clientRawRequest?.headers?.["x-include-reasoning"] === "true";
+    if (!includeReasoning && parsed?.choices) {
       for (const choice of parsed.choices) {
         if (choice?.message?.reasoning_content && choice.message.content) {
           delete choice.message.reasoning_content;

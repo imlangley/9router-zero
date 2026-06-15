@@ -194,9 +194,12 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     translatedResponse.usage = filterUsageForFormat(addBufferToUsage(translatedResponse.usage), sourceFormat);
   }
 
-  // Strip reasoning_content — some clients (e.g. Firecrawl AI SDK) have JSON parsers that
-  // break on this non-standard field, even though OpenAI allows it in extensions.
-  if (translatedResponse?.choices) {
+  // Strip reasoning_content unless client opts in via x-include-reasoning header.
+  // Some clients (e.g. Firecrawl AI SDK) have JSON parsers that break on this
+  // non-standard field. Clients that want reasoning (Factory Droid, Cline, etc.)
+  // can send `x-include-reasoning: true` to preserve it.
+  const includeReasoning = clientRawRequest?.headers?.["x-include-reasoning"] === "true";
+  if (!includeReasoning && translatedResponse?.choices) {
     for (const choice of translatedResponse.choices) {
       if (choice?.message) delete choice.message.reasoning_content;
     }
