@@ -18,6 +18,7 @@ const TERMINAL_ACCOUNT_STATUSES = new Set([
   "skipped_duplicate_input",
   "failed",
   "failed_invalid_credentials",
+  "failed_restricted",
   "failed_exchange",
   "failed_timeout",
   "cancelled",
@@ -809,6 +810,8 @@ export class KiroBulkImportManager {
     const tryWithProxy = async (proxy) => {
       const ctx = await createFreshContext(job.browser, proxy);
       const cbPromise = createKiroCallbackMonitor(ctx.context, ctx.page);
+      // Suppress unhandled rejection if callback times out after account failure
+      cbPromise.catch(() => null);
       return { context: ctx.context, page: ctx.page, callbackPromise: cbPromise };
     };
 
