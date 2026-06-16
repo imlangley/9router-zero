@@ -662,11 +662,17 @@ export default function ProviderDetailPage() {
   // Works for any provider that supports dynamic model listing (Qoder, Kiro,
   // Gemini CLI, Antigravity, and all OpenAI-compatible API-key providers).
   const FETCH_MODELS_PROVIDERS = new Set([
+    // Custom resolvers (OAuth / special auth)
     "qoder", "kiro", "gemini-cli", "antigravity",
-    "openai", "deepseek", "groq", "mistral", "xai", "perplexity",
-    "together", "fireworks", "cerebras", "cohere", "nebius",
+    // OAuth providers with model listing
+    "codex", "gemini", "github",
+    // OpenAI-compatible API key providers (backend has /v1/models config)
+    "openai", "anthropic", "claude", "deepseek", "groq", "mistral", "xai",
+    "perplexity", "together", "fireworks", "cerebras", "cohere", "nebius",
     "siliconflow", "hyperbolic", "nvidia", "vercel-ai-gateway",
-    "openrouter", "ollama-local", "nanobanana", "chutes",
+    "openrouter", "ollama", "ollama-local", "nanobanana", "chutes",
+    "assemblyai", "qwen", "alicode", "alicode-intl",
+    "volcengine-ark", "byteplus",
   ]);
 
   const handleFetchModels = async () => {
