@@ -142,7 +142,7 @@ export default function ProviderDetailPage() {
   const [oneByOneResults, setOneByOneResults] = useState({});
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
-  const [importingQoderModels, setImportingQoderModels] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
   const [kiroBulkJob, setKiroBulkJob] = useState(null);
   const [kiroBulkNotice, setKiroBulkNotice] = useState("");
   const [connectionsPage, setConnectionsPage] = useState(1);
@@ -658,16 +658,26 @@ export default function ProviderDetailPage() {
     }
   };
 
-  // Fetch Qoder model list and automatically add to available models
-  const handleImportQoderModels = async () => {
-    if (importingQoderModels) return;
+  // Fetch model list from provider API and auto-add missing models as aliases.
+  // Works for any provider that supports dynamic model listing (Qoder, Kiro,
+  // Gemini CLI, Antigravity, and all OpenAI-compatible API-key providers).
+  const FETCH_MODELS_PROVIDERS = new Set([
+    "qoder", "kiro", "gemini-cli", "antigravity",
+    "openai", "deepseek", "groq", "mistral", "xai", "perplexity",
+    "together", "fireworks", "cerebras", "cohere", "nebius",
+    "siliconflow", "hyperbolic", "nvidia", "vercel-ai-gateway",
+    "openrouter", "ollama-local", "nanobanana", "chutes",
+  ]);
+
+  const handleFetchModels = async () => {
+    if (fetchingModels) return;
     const activeConnection = connections.find((conn) => conn.isActive !== false);
     if (!activeConnection) {
-      alert(translate("Please add an active Qoder connection first"));
+      alert(translate("Please add an active connection first"));
       return;
     }
 
-    setImportingQoderModels(true);
+    setFetchingModels(true);
     try {
       const res = await fetch(`/api/providers/${activeConnection.id}/models`);
       const data = await res.json();
@@ -686,22 +696,21 @@ export default function ProviderDetailPage() {
         const modelId = model.id || model.name;
         if (!modelId) continue;
         
-        // Qoder model ID format may be "qoder/auto" or "auto", need to remove prefix
-        const cleanModelId = modelId.replace(/^qoder\//, "");
+        // Strip provider prefix if present (e.g. "qoder/auto" → "auto")
+        const cleanModelId = modelId.replace(new RegExp(`^${providerStorageAlias}/`), "");
         const fullModel = `${providerStorageAlias}/${cleanModelId}`;
         
-        // Check if already exists
+        // Skip if already exists as alias
         if (Object.values(modelAliases).includes(fullModel)) {
           continue;
         }
         
-        // Use model ID as alias
-        const alias = cleanModelId;
-        if (modelAliases[alias]) {
+        // Skip if alias name already taken
+        if (modelAliases[cleanModelId]) {
           continue;
         }
         
-        await handleSetAlias(cleanModelId, alias, providerStorageAlias);
+        await handleSetAlias(cleanModelId, cleanModelId, providerStorageAlias);
         importedCount += 1;
       }
       
@@ -711,10 +720,10 @@ export default function ProviderDetailPage() {
         alert(translate("Successfully added") + ` ${importedCount} ` + translate("models"));
       }
     } catch (error) {
-      console.log("Error importing Qoder models:", error);
+      console.log("Error fetching models:", error);
       alert(translate("Error fetching models") + ": " + error.message);
     } finally {
-      setImportingQoderModels(false);
+      setFetchingModels(false);
     }
   };
 
@@ -1460,18 +1469,18 @@ export default function ProviderDetailPage() {
           Add Model
         </button>
 
-        {/* Import Qoder models button — only show for qoder provider */}
-        {providerId === "qoder" && connections.some((conn) => conn.isActive !== false) && (
+        {/* Fetch models from provider API — show for providers that support dynamic model listing */}
+        {FETCH_MODELS_PROVIDERS.has(providerId) && connections.some((conn) => conn.isActive !== false) && (
           <button
             type="button"
-            onClick={handleImportQoderModels}
-            disabled={importingQoderModels}
+            onClick={handleFetchModels}
+            disabled={fetchingModels}
             className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-blue-500/40 px-3 py-2 text-xs text-blue-600 dark:text-blue-400 transition-colors hover:border-blue-500 hover:bg-blue-500/5 sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <span className="material-symbols-outlined text-sm" style={importingQoderModels ? { animation: "spin 1s linear infinite" } : undefined}>
-              {importingQoderModels ? "progress_activity" : "download"}
+            <span className="material-symbols-outlined text-sm" style={fetchingModels ? { animation: "spin 1s linear infinite" } : undefined}>
+              {fetchingModels ? "progress_activity" : "download"}
             </span>
-            {importingQoderModels ? translate("Fetching...") : translate("Fetch Qoder Models")}
+            {fetchingModels ? translate("Fetching...") : translate("Fetch Models")}
           </button>
         )}
 
