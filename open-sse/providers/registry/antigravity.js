@@ -25,7 +25,7 @@ export default {
     ],
     format: "antigravity",
     headers: {
-      "User-Agent": "antigravity/1.107.0 darwin/arm64",
+      "User-Agent": "antigravity/1.15.8 darwin/arm64",
     },
     retry: {
       "429": {

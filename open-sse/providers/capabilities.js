@@ -78,13 +78,12 @@ export const MODEL_CAPABILITIES = {
  * Provider-specific capability overrides. Keyed by provider alias/id.
  */
 export const PROVIDER_CAPABILITIES = {
-  // Antigravity routes Claude models through Gemini API, so use Gemini thinking format
+  // Antigravity uses Cloud Code envelope wrapper
+  // Claude models use Claude format (not Gemini format)
   antigravity: {
-    "claude-opus-4-6-thinking":       { vision: true, reasoning: true, search: true, thinkingFormat: "gemini-budget", contextWindow: 1000000, maxOutput: 128000 },
-    "claude-sonnet-4-6-thinking":     { vision: true, reasoning: true, search: true, thinkingFormat: "gemini-budget", contextWindow: 1000000, maxOutput: 128000 },
-    "claude-opus-4-7-thinking":       { vision: true, reasoning: true, search: true, thinkingFormat: "gemini-budget", contextWindow: 1000000, maxOutput: 128000 },
-    "claude-sonnet-4-7-thinking":     { vision: true, reasoning: true, search: true, thinkingFormat: "gemini-budget", contextWindow: 1000000, maxOutput: 128000 },
-    "claude-opus-4-8-thinking":       { vision: true, reasoning: true, search: true, thinkingFormat: "gemini-budget", contextWindow: 1000000, maxOutput: 128000 },
+    "claude-opus-4-6-thinking": { thinkingFormat: "claude-adaptive" },
+    "claude-sonnet-4-6-thinking": { thinkingFormat: "claude-adaptive" },
+    "claude-sonnet-4-6": { thinkingFormat: "claude-adaptive" },
   },
 };
 

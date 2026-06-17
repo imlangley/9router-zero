@@ -164,8 +164,13 @@ const PROVIDER_MODELS_CONFIG = {
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${token}`,
-            "User-Agent": "google-api-nodejs-client/9.15.1",
-            "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1"
+            "User-Agent": "antigravity/1.15.8 darwin/arm64",
+            "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+            "Client-Metadata": JSON.stringify({
+              ideType: "ANTIGRAVITY",
+              platform: "MACOS",
+              pluginType: "GEMINI"
+            })
           },
           body: JSON.stringify(body)
         });
