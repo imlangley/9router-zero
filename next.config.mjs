@@ -40,6 +40,11 @@ const nextConfig = {
         path: false,
       };
     }
+    // Exclude playwright from server bundle (dynamically imported at runtime)
+    if (isServer) {
+      config.externals = config.externals || [];
+      config.externals.push({ playwright: "commonjs playwright" });
+    }
     // Exclude logs, .next, gitbook subapp from watcher
     config.watchOptions = { ...config.watchOptions, ignored: /[\\/](logs|\.next|gitbook|cli)[\\/]/ };
     return config;
