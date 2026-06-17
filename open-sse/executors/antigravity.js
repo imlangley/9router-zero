@@ -101,8 +101,20 @@ export class AntigravityExecutor extends BaseExecutor {
 
     this._lastSessionId = transformedRequest.sessionId; // cached for buildHeaders (base.execute order)
 
+    const {
+      thinking: _thinking,
+      reasoning_effort: _reasoningEffort,
+      reasoning: _reasoning,
+      thinkingConfig: _thinkingConfig,
+      enable_thinking: _enableThinking,
+      thinking_budget: _thinkingBudget,
+      output_config: _outputConfig,
+      generationConfig: _generationConfig,
+      ...envelopeWithoutUnsupportedThinking
+    } = body;
+
     return {
-      ...body,
+      ...envelopeWithoutUnsupportedThinking,
       project: projectId,
       model: model,
       userAgent: "antigravity",

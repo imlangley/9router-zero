@@ -55,6 +55,39 @@ describe("Antigravity → OpenAI", () => {
 });
 
 describe("Antigravity executor", () => {
+  it("does not leak top-level thinking fields into Antigravity envelope", () => {
+    const out = new AntigravityExecutor().transformRequest("claude-opus-4-6-thinking", {
+      thinking: { type: "enabled", budget_tokens: 10000 },
+      reasoning_effort: "high",
+      reasoning: { effort: "high" },
+      thinkingConfig: { thinkingBudget: 10000, includeThoughts: true },
+      enable_thinking: true,
+      thinking_budget: 10000,
+      output_config: { effort: "high" },
+      generationConfig: { thinkingConfig: { thinkingBudget: 10000, includeThoughts: true } },
+      request: {
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+        generationConfig: {
+          maxOutputTokens: 1024,
+          thinkingConfig: { thinkingBudget: 10000, includeThoughts: true },
+        },
+      },
+    }, true, { projectId: "project-1", connectionId: "conn-1" });
+
+    expect(out.thinking).toBeUndefined();
+    expect(out.reasoning_effort).toBeUndefined();
+    expect(out.reasoning).toBeUndefined();
+    expect(out.thinkingConfig).toBeUndefined();
+    expect(out.enable_thinking).toBeUndefined();
+    expect(out.thinking_budget).toBeUndefined();
+    expect(out.output_config).toBeUndefined();
+    expect(out.generationConfig).toBeUndefined();
+    expect(out.request.generationConfig.thinkingConfig).toEqual({
+      thinkingBudget: 10000,
+      includeThoughts: true,
+    });
+  });
+
   it("strips optional from nested tool schemas", () => {
     const out = new AntigravityExecutor().transformRequest("gemini-2.5-pro", {
       request: {
