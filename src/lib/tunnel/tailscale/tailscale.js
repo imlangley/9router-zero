@@ -20,7 +20,7 @@ const TAILSCALE_DIR = path.join(DATA_DIR, "tailscale");
 export const TAILSCALE_SOCKET = path.join(TAILSCALE_DIR, "tailscaled.sock");
 const SOCKET_FLAG = IS_WINDOWS ? [] : ["--socket", TAILSCALE_SOCKET];
 
-// System daemon socket (sudo install: apt/snap/systemd) ΓÇö read-only status detection
+// System daemon socket (sudo install: apt/snap/systemd) — read-only status detection
 const SYSTEM_TAILSCALE_SOCKET = IS_WINDOWS ? null : "/var/run/tailscale/tailscaled.sock";
 const SYSTEM_SOCKET_FLAG = SYSTEM_TAILSCALE_SOCKET ? ["--socket", SYSTEM_TAILSCALE_SOCKET] : [];
 
@@ -36,7 +36,7 @@ const UNIX_TAILSCALE_CANDIDATES = [
   "/snap/bin/tailscale",   // Snap package
 ];
 
-// ΓöÇΓöÇΓöÇ Cache + background refresh (avoid blocking event loop on dead daemon) ΓöÇΓöÇ
+// ─── Cache + background refresh (avoid blocking event loop on dead daemon) ──
 const PROBE_TTL_MS = 10000;
 const PROBE_TIMEOUT_MS = 1500;
 
@@ -103,7 +103,7 @@ export async function isTailscaleLoggedInStrict() {
       timeout: 5000
     });
     const json = JSON.parse(stdout);
-    // BackendState=Running + Self.Online=true ΓåÆ device still exists in tailnet
+    // BackendState=Running + Self.Online=true → device still exists in tailnet
     const loggedIn = json.BackendState === "Running" && json.Self?.Online === true;
     loggedInCache.value = loggedIn;
     loggedInCache.fetchedAt = Date.now();
@@ -238,7 +238,7 @@ function bgRefreshFunnelUrl(port) {
     });
 }
 
-/** Get actual funnel URL from Self.DNSName (sync, authoritative ΓÇö avoids hostname-conflict suffix). */
+/** Get actual funnel URL from Self.DNSName (sync, authoritative — avoids hostname-conflict suffix). */
 function getActualFunnelUrl() {
   const bin = getTailscaleBin();
   if (!bin) return null;
@@ -367,7 +367,7 @@ async function installTailscaleMac(sudoPassword, log) {
 }
 
 async function installTailscaleLinux(sudoPassword, log) {
-  // Reject password containing newline ΓåÆ prevents stdin command injection
+  // Reject password containing newline → prevents stdin command injection
   if (typeof sudoPassword !== "string" || sudoPassword.includes("\n")) {
     throw new Error("Invalid sudo password");
   }
@@ -384,7 +384,7 @@ async function installTailscaleLinux(sudoPassword, log) {
     curlChild.on("exit", (code) => {
       if (code !== 0) return reject(new Error(`Failed to download install script: ${curlErr}`));
       log("Running install script...");
-      // Persist script to temp file ΓåÆ exec by path (NOT via stdin) ΓåÆ sh never reads attacker-controlled stdin
+      // Persist script to temp file → exec by path (NOT via stdin) → sh never reads attacker-controlled stdin
       const tmpScript = path.join(os.tmpdir(), `tailscale-install-${crypto.randomBytes(8).toString("hex")}.sh`);
       try {
         fs.writeFileSync(tmpScript, scriptContent, { mode: 0o700 });
@@ -421,7 +421,7 @@ async function installTailscaleWindows(log) {
   const msiUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi";
   const msiPath = path.join(os.tmpdir(), "tailscale-setup.msi");
 
-  // Download MSI via curl.exe (built-in on Win10+) ΓÇö no PowerShell window, streams progress
+  // Download MSI via curl.exe (built-in on Win10+) — no PowerShell window, streams progress
   log("Downloading Tailscale installer...");
   await new Promise((resolve, reject) => {
     const child = spawn("curl.exe", ["-L", "-#", "-o", msiPath, msiUrl], {
@@ -519,14 +519,14 @@ function isDaemonTunMode() {
   } catch { return null; }
 }
 
-/** Daemon process alive (independent of funnel state) ΓÇö mirrors cloudflared PID check semantic. */
+/** Daemon process alive (independent of funnel state) — mirrors cloudflared PID check semantic. */
 export function isDaemonAlive() {
   return isDaemonTunMode() !== null;
 }
 
 /**
  * Start tailscaled.
- * - With sudoPassword: TUN mode (root) ΓåÆ Funnel TLS works
+ * - With sudoPassword: TUN mode (root) → Funnel TLS works
  * - Without: userspace-networking fallback (no sudo, but Funnel TLS unstable)
  * State always lives in ~/.9router/tailscale/ via --statedir.
  */
@@ -556,10 +556,10 @@ export async function startDaemonWithPassword(sudoPassword) {
   }
 
   const currentMode = isDaemonTunMode(); // true=TUN, false=userspace, null=not running
-  // No password but a healthy TUN daemon already runs ΓåÆ keep TUN, never downgrade-kill it.
+  // No password but a healthy TUN daemon already runs → keep TUN, never downgrade-kill it.
   const wantTun = sudoPassword ? true : currentMode === true;
 
-  // Daemon already running in correct mode ΓåÆ reuse
+  // Daemon already running in correct mode → reuse
   if (currentMode !== null && currentMode === wantTun) {
     try {
       const bin = getTailscaleBin() || "tailscale";
@@ -571,7 +571,7 @@ export async function startDaemonWithPassword(sudoPassword) {
     } catch { /* unresponsive, restart below */ }
   }
 
-  // Mode mismatch or unresponsive ΓåÆ kill all daemons on our socket
+  // Mode mismatch or unresponsive → kill all daemons on our socket
   try { execSync(`pkill -9 -f "tailscaled.*${TAILSCALE_SOCKET}"`, { stdio: "ignore", timeout: 3000 }); } catch { /* ignore */ }
   if (sudoPassword) {
     try { await execWithPassword(`pkill -9 -f "tailscaled.*${TAILSCALE_SOCKET}"`, sudoPassword); } catch { /* ignore */ }
@@ -637,7 +637,7 @@ function getAuthUrlFromStatus() {
 /**
  * Run `tailscale up` and capture the auth URL for browser login.
  * Resolves with { authUrl } or { alreadyLoggedIn: true }.
- * On Windows, AuthURL comes from `status --json` (not stdout) ΓÇö must poll status.
+ * On Windows, AuthURL comes from `status --json` (not stdout) — must poll status.
  */
 export function startLogin(hostname) {
   const bin = getTailscaleBin();
@@ -679,7 +679,7 @@ export function startLogin(hostname) {
       resolve({ authUrl: url });
     };
 
-    // Poll status --json every 500ms ΓÇö Windows exposes AuthURL only there
+    // Poll status --json every 500ms — Windows exposes AuthURL only there
     const statusPoll = setInterval(() => {
       if (resolved) return;
       const url = getAuthUrlFromStatus();
@@ -717,7 +717,7 @@ export function startLogin(hostname) {
     child.on("exit", (code) => {
       if (resolved) return;
       console.log(`[Tailscale] login exit code=${code}`);
-      // Don't trust exit code alone ΓÇö Win `tailscale up` exits 0 even when not logged in.
+      // Don't trust exit code alone — Win `tailscale up` exits 0 even when not logged in.
       // Let status poll continue until AuthURL appears or timeout.
       const url = parseAuthUrl(output) || getAuthUrlFromStatus();
       if (url) {
@@ -732,7 +732,7 @@ export function startLogin(hostname) {
         resolve({ alreadyLoggedIn: true });
         return;
       }
-      // Otherwise keep polling ΓÇö daemon may publish AuthURL shortly after exit
+      // Otherwise keep polling — daemon may publish AuthURL shortly after exit
     });
   });
 }

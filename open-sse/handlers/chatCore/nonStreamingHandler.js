@@ -8,7 +8,6 @@ import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
-import { recordProxyRequestResult } from "../../services/proxyRotation.js";
 
 /**
  * Translate non-streaming response body from provider format → OpenAI format.
@@ -77,7 +76,12 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
     // missing/null (e.g. M3 with max_tokens:1 spends the budget on thinking
     // and returns `content: null`). Returning the raw body would leave the
     // OpenAI client without a `choices` array and surface as a UI test error.
-    if (responseBody.content && !Array.isArray(responseBody.content)) return responseBody;
+    // Early return if the response is already in OpenAI format (has choices array)
+    // or if it has content as a non-array value (likely a different non-Claude format).
+    // Some providers (e.g. xiaomi-tokenplan) return OpenAI-format responses even when
+    // the request was translated to Claude format — the targetFormat is Claude but the
+    // actual response is OpenAI-native and needs no further translation.
+    if (responseBody.choices || (responseBody.content && !Array.isArray(responseBody.content))) return responseBody;
 
     let textContent = "", thinkingContent = "";
     const toolCalls = [];
@@ -133,7 +137,7 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
 /**
  * Handle non-streaming response from provider.
  */
-export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, trackDone, appendLog, proxyDecision }) {
+export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, trackDone, appendLog }) {
   trackDone();
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
@@ -195,23 +199,22 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   }
 
   // Strip reasoning_content unless client opts in via x-include-reasoning header.
-  // Some clients (e.g. Firecrawl AI SDK) have JSON parsers that break on this
-  // non-standard field. Clients that want reasoning (Factory Droid, Cline, etc.)
-  // can send `x-include-reasoning: true` to preserve it.
+  // Without opt-in: strip when content is non-empty (backward compat — some clients
+  // break on non-standard fields). When content is empty (thinking-only models),
+  // reasoning_content is preserved as the only useful output.
+  // With opt-in (x-include-reasoning: true): always preserve reasoning_content.
   const includeReasoning = clientRawRequest?.headers?.["x-include-reasoning"] === "true";
   if (!includeReasoning && translatedResponse?.choices) {
     for (const choice of translatedResponse.choices) {
-      if (choice?.message) delete choice.message.reasoning_content;
+      if (choice?.message?.reasoning_content && choice.message.content) {
+        delete choice.message.reasoning_content;
+      }
     }
   }
 
   reqLogger.logConvertedResponse(translatedResponse);
 
   const totalLatency = Date.now() - requestStartTime;
-  const proxy = recordProxyRequestResult(proxyDecision, {
-    latencyMs: totalLatency,
-    statusCode: providerResponse.status,
-  });
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
     latency: { ttft: totalLatency, total: totalLatency },
@@ -224,7 +227,6 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       thinking: translatedResponse?.choices?.[0]?.message?.reasoning_content || translatedResponse?.reasoning_content || null,
       finish_reason: translatedResponse?.choices?.[0]?.finish_reason || "unknown"
     },
-    proxy,
     status: "success"
   }, { endpoint: clientRawRequest?.endpoint || null })).catch(err => {
     console.error("[RequestDetail] Failed to save:", err.message);

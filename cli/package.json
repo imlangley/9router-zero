@@ -1,9 +1,8 @@
 {
-  "name": "wyxrouter",
-  "version": "0.4.80",
+  "name": "9router",
+  "version": "0.5.2",
   "description": "9Router CLI - Start and manage 9Router server",
   "bin": {
-    "wyxrouter": "./cli.js",
     "9router": "./cli.js"
   },
   "files": [
@@ -42,11 +41,6 @@
     "api"
   ],
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Wisyam/9router_wyx0"
-  },
-  "homepage": "https://9router.com",
   "devDependencies": {
     "esbuild": "^0.25.12",
     "nodemon": "^3.1.14"

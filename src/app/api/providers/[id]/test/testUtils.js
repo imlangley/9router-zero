@@ -1,26 +1,9 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
-import { PROVIDER_ENDPOINTS } from "@/shared/constants/config";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
-import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
-import { randomUUID } from "crypto";
-import { gzipSync } from "zlib";
-
-function parseCodeBuddyError(text) {
-  try {
-    const payload = JSON.parse(text);
-    const code = payload?.error?.data?.code || payload?.code;
-    const message = payload?.error?.data?.msg || payload?.error?.message || payload?.msg || payload?.message;
-    if (code === 14017) {
-      return "CodeBuddy trial is not activated yet. Log in to this CodeBuddy account once in the web/CLI account to activate the free trial, then test again.";
-    }
-    if (message) return `CodeBuddy error ${code || "unknown"}: ${message}`;
-  } catch {
-    // Fall through to raw text fallback.
-  }
-  return null;
-}
+import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -33,10 +16,8 @@ import {
   CLAUDE_CONFIG,
   CLINE_CONFIG,
   KILOCODE_CONFIG,
-  CODEBUDDY_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
-import { selectProxyForRequest, recordProxyRequestResult } from "open-sse/services/proxyRotation.js";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -229,33 +210,6 @@ async function refreshOAuthToken(connection) {
       };
     }
 
-    if (provider === "codebuddy") {
-      const response = await fetch(CODEBUDDY_CONFIG.refreshUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          "User-Agent": CODEBUDDY_CONFIG.userAgent,
-          "X-Requested-With": "XMLHttpRequest",
-          "X-Domain": CODEBUDDY_CONFIG.domain,
-          "X-Refresh-Token": refreshToken,
-          "X-Auth-Refresh-Source": "plugin",
-          "X-Product": "SaaS",
-        },
-        body: "{}",
-      });
-      if (!response.ok) return null;
-      const payload = await response.json();
-      const data = payload?.data || payload;
-      const accessToken = data?.accessToken || data?.access_token;
-      if (!accessToken) return null;
-      return {
-        accessToken,
-        expiresIn: data?.expiresIn || data?.expires_in || 86400,
-        refreshToken: data?.refreshToken || data?.refresh_token || refreshToken,
-      };
-    }
-
     return null;
   } catch (err) {
     console.log(`Error refreshing ${provider} token:`, err.message);
@@ -412,49 +366,6 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
 
   try {
     switch (connection.provider) {
-      case "codebuddy": {
-        const token = connection.apiKey || connection.accessToken;
-        if (!token) return { valid: false, error: "Missing CodeBuddy API key" };
-        const requestId = randomUUID().replace(/-/g, "");
-        const conversationId = randomUUID().replace(/-/g, "");
-        const body = {
-          model: "default-model",
-          stream: true,
-          max_tokens: 16,
-          messages: [
-            { role: "system", content: "You are CodeBuddy Code." },
-            { role: "user", content: [{ type: "text", text: "Say OK." }] },
-          ],
-        };
-        const res = await fetchWithConnectionProxy("https://www.codebuddy.ai/v2/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: "text/event-stream",
-            "Content-Type": "application/json; charset=utf-8",
-            "Content-Encoding": "gzip",
-            "User-Agent": "CLI/2.105.2 CodeBuddy/2.105.2",
-            "X-Requested-With": "XMLHttpRequest",
-            "X-Domain": connection.providerSpecificData?.domain || "www.codebuddy.ai",
-            "X-Request-ID": requestId,
-            "X-Conversation-ID": conversationId,
-            "X-Conversation-Request-ID": conversationId,
-            "X-Conversation-Message-ID": requestId,
-            "X-Agent-Intent": "craft",
-            "X-IDE-Type": "CLI",
-            "X-IDE-Name": "CLI",
-            "X-IDE-Version": "2.105.2",
-            "X-Private-Data": "false",
-          },
-          body: gzipSync(JSON.stringify(body)),
-        }, effectiveProxy);
-        if (res.ok) return { valid: true, error: null };
-        const text = await res.text().catch(() => "");
-        if (res.status === 401) return { valid: false, error: "CodeBuddy API key invalid or revoked" };
-        if (res.status === 403) return { valid: false, error: "CodeBuddy API key access denied" };
-        const parsedError = parseCodeBuddyError(text);
-        return { valid: false, error: parsedError || `CodeBuddy test returned ${res.status}: ${text.slice(0, 180)}` };
-      }
       case "cloudflare-ai": {
         const psd = connection.providerSpecificData || {};
         const accountId = psd.accountId;
@@ -562,7 +473,7 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       }
       case "volcengine-ark":
       case "byteplus": {
-        const res = await fetchWithConnectionProxy(PROVIDER_ENDPOINTS[connection.provider], {
+        const res = await fetchWithConnectionProxy(PROVIDERS[connection.provider]?.baseUrl, {
           method: "POST",
           headers: { "Authorization": `Bearer ${connection.apiKey}`, "content-type": "application/json" },
           body: JSON.stringify({ model: getDefaultModel(connection.provider), max_tokens: 1, messages: [{ role: "user", content: "test" }] }),
@@ -717,43 +628,18 @@ export async function testSingleConnection(id) {
   const connection = await getProviderConnectionById(id);
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
 
-  const proxyDecision = await selectProxyForRequest({
-    provider: connection.provider,
-    credentials: connection,
-    purpose: "connection_test",
-  });
-  const effectiveProxy = proxyDecision.proxyOptions;
-
-  if (proxyDecision.blocked) {
-    const proxy = recordProxyRequestResult(proxyDecision, {
-      failed: true,
-      latencyMs: 0,
-      error: proxyDecision.error,
-    });
-    await updateProviderConnection(id, {
-      testStatus: "error",
-      lastError: proxyDecision.error,
-      lastErrorAt: new Date().toISOString(),
-    });
-    return { valid: false, error: proxyDecision.error, latencyMs: 0, testedAt: new Date().toISOString(), proxy };
-  }
+  const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
 
   if (effectiveProxy.connectionProxyEnabled && effectiveProxy.connectionProxyUrl && !effectiveProxy.vercelRelayUrl) {
     const proxyResult = await testProxyUrl({ proxyUrl: effectiveProxy.connectionProxyUrl });
     if (!proxyResult.ok) {
       const proxyError = proxyResult.error || `Proxy test failed with status ${proxyResult.status}`;
-      const proxy = recordProxyRequestResult(proxyDecision, {
-        failed: true,
-        latencyMs: 0,
-        statusCode: proxyResult.status,
-        error: proxyError,
-      });
       await updateProviderConnection(id, {
         testStatus: "error",
         lastError: proxyError,
         lastErrorAt: new Date().toISOString(),
       });
-      return { valid: false, error: proxyError, latencyMs: 0, testedAt: new Date().toISOString(), proxy };
+      return { valid: false, error: proxyError, latencyMs: 0, testedAt: new Date().toISOString() };
     }
   }
 
@@ -767,12 +653,6 @@ export async function testSingleConnection(id) {
   }
 
   const latencyMs = Date.now() - start;
-  const proxy = recordProxyRequestResult(proxyDecision, {
-    failed: !result.valid,
-    latencyMs,
-    statusCode: result.statusCode || null,
-    error: result.error || null,
-  });
 
   const updateData = {
     testStatus: result.valid ? "active" : "error",
@@ -801,5 +681,5 @@ export async function testSingleConnection(id) {
 
   await updateProviderConnection(id, updateData);
 
-  return { valid: result.valid, error: result.error, refreshed: !!result.refreshed, latencyMs, testedAt: new Date().toISOString(), proxy };
+  return { valid: result.valid, error: result.error, refreshed: !!result.refreshed, latencyMs, testedAt: new Date().toISOString() };
 }
