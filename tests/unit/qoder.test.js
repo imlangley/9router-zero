@@ -353,6 +353,42 @@ describe("normalizeMessages", () => {
     expect(result.messages[0].content).toBe("part1\npart2");
   });
 
+  it("preserves base64 image_url content blocks for Qoder vision models", () => {
+    const image = "iVBORw0KGgo=";
+    const result = normalizeMessages([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "describe" },
+          { type: "image_url", image_url: { url: `data:image/png;base64,${image}` } },
+        ],
+      },
+    ]);
+
+    expect(result.messages[0].content).toEqual([
+      { type: "text", text: "describe" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: image } },
+    ]);
+  });
+
+  it("preserves Anthropic-style image blocks for Qoder vision models", () => {
+    const image = "iVBORw0KGgo=";
+    const result = normalizeMessages([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "describe" },
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: image } },
+        ],
+      },
+    ]);
+
+    expect(result.messages[0].content).toEqual([
+      { type: "text", text: "describe" },
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: image } },
+    ]);
+  });
+
   it("joins multiple system messages with a blank line", () => {
     const result = normalizeMessages([
       { role: "system", content: "rule 1" },

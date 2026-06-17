@@ -38,7 +38,8 @@ import { getQoderModelConfig, resolveQoderModels } from "../services/qoderModels
 
 /**
  * Hoist role:"system" messages out of the messages array (Qoder rejects
- * system in messages) and flatten any multipart content arrays.
+ * system in messages) while preserving Qoder/Anthropic-style base64 image
+ * content blocks for vision-capable models.
  */
 function normalizeMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -54,10 +55,64 @@ function normalizeMessages(messages) {
       continue;
     }
     const cloned = { ...msg };
-    cloned.content = text;
+    cloned.content = normalizeQoderContent(msg.content, text);
     out.push(cloned);
   }
   return { messages: out, systemText: systemParts.join("\n\n") };
+}
+
+function normalizeQoderContent(content, fallbackText = "") {
+  if (!Array.isArray(content)) return fallbackText;
+
+  const blocks = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue;
+    if (item.type === "text" && typeof item.text === "string") {
+      blocks.push({ type: "text", text: item.text });
+      continue;
+    }
+    if (typeof item.text === "string") {
+      blocks.push({ type: "text", text: item.text });
+      continue;
+    }
+    const image = normalizeQoderImageBlock(item);
+    if (image) blocks.push(image);
+  }
+
+  return blocks.some((block) => block.type === "image") ? blocks : fallbackText;
+}
+
+function normalizeQoderImageBlock(item) {
+  if (item.type === "image" && item.source && typeof item.source === "object") {
+    const source = item.source;
+    if (source.type === "base64" && typeof source.data === "string") {
+      return {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: typeof source.media_type === "string" ? source.media_type : "image/png",
+          data: source.data,
+        },
+      };
+    }
+  }
+
+  if (item.type === "image_url" && item.image_url && typeof item.image_url === "object") {
+    const url = item.image_url.url;
+    if (typeof url !== "string") return null;
+    const match = /^data:(image\/[\w.+-]+);base64,(.+)$/i.exec(url);
+    if (!match) return null;
+    return {
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: match[1].toLowerCase(),
+        data: match[2],
+      },
+    };
+  }
+
+  return null;
 }
 
 function extractText(content) {
@@ -82,8 +137,8 @@ function extractText(content) {
 function lastUserText(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m?.role === "user" && typeof m.content === "string") {
-      return m.content;
+    if (m?.role === "user") {
+      return extractText(m.content);
     }
   }
   return "";
