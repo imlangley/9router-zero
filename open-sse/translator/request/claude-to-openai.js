@@ -10,11 +10,6 @@ function stripAnthropicBillingHeader(text) {
   return text.replace(/^x-anthropic-billing-header:[^\n]*(?:\r?\n)?/i, "");
 }
 
-function stripAnthropicBillingHeader(text) {
-  if (typeof text !== "string") return "";
-  return text.replace(/^x-anthropic-billing-header:[^\n]*(?:\r?\n)?/i, "");
-}
-
 // Convert Claude request to OpenAI format
 export function claudeToOpenAIRequest(model, body, stream) {
   const result = {
