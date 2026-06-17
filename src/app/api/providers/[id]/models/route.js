@@ -154,13 +154,25 @@ const PROVIDER_MODELS_CONFIG = {
     parseResponse: parseCodexModels
   },
   antigravity: {
-    url: "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:models",
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    authHeader: "Authorization",
-    authPrefix: "Bearer ",
-    body: {},
-    parseResponse: (data) => data.models || []
+    customResolver: buildOAuthResolver({
+      refreshFn: (conn) => refreshGoogleToken(conn.refreshToken, GEMINI_CONFIG.clientId, GEMINI_CONFIG.clientSecret),
+      fetchFn: (token, conn) => {
+        const projectId = conn.projectId || conn.providerSpecificData?.projectId;
+        const body = projectId ? { project: projectId } : {};
+        return fetch("https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`,
+            "User-Agent": "google-api-nodejs-client/9.15.1",
+            "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1"
+          },
+          body: JSON.stringify(body)
+        });
+      },
+      parseFn: parseGeminiCliModels,
+      errorLabel: "Failed to fetch Antigravity models"
+    })
   },
   github: {
     url: "https://api.githubcopilot.com/models",
