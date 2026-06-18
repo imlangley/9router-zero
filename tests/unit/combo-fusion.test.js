@@ -115,6 +115,36 @@ describe("fusion combo", () => {
     expect(judgeBody.tool_choice).toBe("auto");
   });
 
+  it("lets the judge continue agentic tool work when tools are available", async () => {
+    const handleSingleModel = vi.fn(async (_body, model) => {
+      if (model === "p/judge") return okResponse("FINAL");
+      return okResponse(`ans-${model}`);
+    });
+
+    await handleFusionChat({
+      body: {
+        messages: [{ role: "user", content: "Find the repo issue and fix it" }],
+        stream: true,
+        tools: [{ type: "function", function: { name: "search_issues", parameters: { type: "object" } } }],
+        tool_choice: "auto",
+      },
+      models: ["p/a", "p/b"],
+      handleSingleModel,
+      log,
+      judgeModel: "p/judge",
+    });
+
+    const [judgeBody] = handleSingleModel.mock.calls.find(([, model]) => model === "p/judge");
+    const judgePrompt = judgeBody.messages.at(-1).content;
+
+    expect(judgeBody.tools).toBeDefined();
+    expect(judgeBody.tool_choice).toBe("auto");
+    expect(judgePrompt).toContain("If the user's task requires tool use");
+    expect(judgePrompt).toContain("call the appropriate tool");
+    expect(judgePrompt).toContain("Only write a final answer");
+    expect(judgePrompt).not.toContain("Produce ONE authoritative final answer");
+  });
+
   it("defaults the judge to the first panel model when none is set", async () => {
     const seen = [];
     const handleSingleModel = vi.fn(async (_body, model) => { seen.push(model); return okResponse(`ans-${model}`); });

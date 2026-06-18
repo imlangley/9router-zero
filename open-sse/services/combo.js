@@ -385,15 +385,21 @@ function appendUserTurn(body, text) {
  * Sources are anonymized ("Source N") so the judge weighs substance, not the
  * reputation of a model brand.
  */
-function buildJudgePrompt(answers) {
+function buildJudgePrompt(answers, canUseTools = false) {
   const panel = answers
     .map((a, i) => `[Source ${i + 1}]\n${a.text}`)
     .join("\n\n");
+  const finalInstruction = canUseTools
+    ? "If the user's task requires tool use or more work, call the appropriate tool and continue the task. Only write a final answer when no further tool/action step is needed."
+    : "Now write the final answer to the user's original request.";
+  const answerInstruction = canUseTools
+    ? "Do NOT mention that multiple models were used, and do NOT refer to the sources. Use the panel analysis to choose the next best action for the user's original request."
+    : "Do NOT mention that multiple models were used, and do NOT refer to the sources. Produce ONE authoritative final answer addressed directly to the user.";
 
   return [
     `You are the JUDGE in a model-fusion panel. ${answers.length} expert models independently answered the user's most recent request. Their responses are below, anonymized by source.`,
     "",
-    "Do NOT mention that multiple models were used, and do NOT refer to the sources. Produce ONE authoritative final answer addressed directly to the user.",
+    answerInstruction,
     "",
     "First, internally analyze the panel along these dimensions: consensus (points most sources agree on — treat as higher-confidence), contradictions (where they disagree — resolve with your own judgment), partial coverage, unique insights only one source surfaced, and blind spots every source missed. Then write the best possible final answer grounded in that analysis — more complete and correct than any single response, with no filler.",
     "",
@@ -401,7 +407,7 @@ function buildJudgePrompt(answers) {
     panel,
     "=== END PANEL RESPONSES ===",
     "",
-    "Now write the final answer to the user's original request.",
+    finalInstruction,
   ].join("\n");
 }
 
@@ -550,7 +556,7 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   }
 
   // 4. Judge analyzes + writes one final answer (streams to client if requested).
-  const judgeBody = appendUserTurn(body, buildJudgePrompt(answers));
+  const judgeBody = appendUserTurn(body, buildJudgePrompt(answers, Array.isArray(body.tools) && body.tools.length > 0));
   log.info("FUSION", `Judging ${answers.length} answers with ${judge}`);
   return handleSingleModel(judgeBody, judge);
 }
