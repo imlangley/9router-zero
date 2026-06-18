@@ -15,7 +15,11 @@ export default {
   ],
   noAuth: true,
   searchConfig: {
-    baseUrl: "http://localhost:8888/search",
+    // Docker deploy: 9Router and SearXNG run in separate containers, so
+    // localhost points at the 9Router container. Use Docker DNS + SearXNG's
+    // internal port by default; override with SEARXNG_BASE_URL when the
+    // service/container name is different.
+    baseUrl: "http://searxng:8080/search",
     method: "GET",
     authType: "none",
     authHeader: "none",

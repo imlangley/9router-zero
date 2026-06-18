@@ -305,7 +305,12 @@ function buildYouComRequest(config, params) {
 }
 
 function buildSearxngRequest(config, params) {
-  const baseUrl = resolveBaseUrl(config, params);
+  const envBaseUrl = typeof process !== "undefined" ? process.env.SEARXNG_BASE_URL : undefined;
+  const baseUrl = (
+    getProviderSetting(params, "baseUrl") ||
+    (typeof envBaseUrl === "string" && envBaseUrl.trim()) ||
+    config.baseUrl
+  ).replace(/\/+$/, "");
   const url = baseUrl.endsWith("/search") ? baseUrl : `${baseUrl}/search`;
   const qp = new URLSearchParams({
     q: params.query,
