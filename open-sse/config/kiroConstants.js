@@ -1,3 +1,6 @@
+import { extractThinking } from "../translator/concerns/thinkingUnified.js";
+import { effortToBudget } from "../translator/concerns/thinking.js";
+
 /**
  * Kiro-specific constants and helpers.
  *
@@ -74,76 +77,49 @@ These constraints prevent server timeouts and ensure reliable operations.
 `.trim();
 
 /**
- * Detect whether an inbound request is asking for reasoning / thinking output.
+ * Resolve the Kiro thinking budget requested by a client.
  *
- * Sources of intent (any one is enough):
- *   - HTTP header `Anthropic-Beta: ...interleaved-thinking...`
- *   - JSON `thinking.type === "enabled"` (Claude Messages API)
- *   - JSON `reasoning_effort` in {low, medium, high, auto} (OpenAI o1/o3)
- *   - JSON `reasoning.effort` in {low, medium, high, auto} (OpenAI Responses)
- *   - System prompt contains `<thinking_mode>enabled</thinking_mode>` or
- *     `<thinking_mode>interleaved</thinking_mode>` (AMP / Cursor)
- *   - Model name contains `thinking` or `-reason`
+ * Reuses the shared thinkingUnified parser so Claude/OpenAI/Responses shapes map
+ * consistently. Explicit none/off/disabled returns null (no prefix injected).
+ * buildThinkingSystemPrefix performs Kiro's final 1..32000 clamp.
  *
- * @param {object} body OpenAI-shaped request body (post-translation)
+ * @param {object} body OpenAI/Claude-shaped request body
  * @param {object} [headers] Original inbound HTTP headers (case-insensitive)
- * @param {string} [model] Model id the caller asked for (post-strip ok)
- * @returns {boolean}
+ * @param {string} [model] Model id the caller asked for
+ * @returns {number|null} budget to inject, or null when thinking is disabled
  */
-export function isThinkingEnabled(body, headers, model) {
-  if (isThinkingExplicitlyDisabled(body)) {
-    return false;
+export function resolveKiroThinkingBudget(body, headers, model) {
+  const cfg = extractThinking(body);
+  if (cfg) {
+    if (cfg.mode === "none") return null;
+    if (cfg.mode === "budget") return cfg.budget;
+    if (cfg.mode === "level") return effortToBudget(cfg.level) ?? KIRO_THINKING_BUDGET_DEFAULT;
+    return KIRO_THINKING_BUDGET_DEFAULT;
   }
 
   if (headers) {
     const beta = pickHeader(headers, "anthropic-beta");
     if (typeof beta === "string" && beta.toLowerCase().includes("interleaved-thinking")) {
-      return true;
+      return KIRO_THINKING_BUDGET_DEFAULT;
     }
   }
 
-  if (body && typeof body === "object") {
-    const thinking = body.thinking;
-    if (thinking && typeof thinking === "object" && thinking.type === "enabled") {
-      const budget = Number(thinking.budget_tokens);
-      if (!Number.isFinite(budget) || budget > 0) {
-        return true;
-      }
-    }
-
-    const effort = body.reasoning_effort
-      ?? (body.reasoning && typeof body.reasoning === "object" ? body.reasoning.effort : null);
-    if (typeof effort === "string") {
-      const v = effort.toLowerCase();
-      if (v && v !== "none" && (v === "low" || v === "medium" || v === "high" || v === "auto")) {
-        return true;
-      }
-    }
-
-    if (containsThinkingModeTag(body)) {
-      return true;
-    }
-  }
+  if (containsThinkingModeTag(body)) return KIRO_THINKING_BUDGET_DEFAULT;
 
   if (typeof model === "string" && model) {
     const m = model.toLowerCase();
-    if (m.includes("thinking") || m.includes("-reason")) {
-      return true;
-    }
+    if (m.includes("thinking") || m.includes("-reason")) return KIRO_THINKING_BUDGET_DEFAULT;
   }
 
-  return false;
+  return null;
 }
 
-function isThinkingExplicitlyDisabled(body) {
-  if (!body || typeof body !== "object") return false;
-  const thinking = body.thinking;
-  if (thinking && typeof thinking === "object" && thinking.type === "disabled") {
-    return true;
-  }
-  const effort = body.reasoning_effort
-    ?? (body.reasoning && typeof body.reasoning === "object" ? body.reasoning.effort : null);
-  return typeof effort === "string" && effort.toLowerCase() === "none";
+/**
+ * Detect whether an inbound request is asking for reasoning / thinking output.
+ * Thin wrapper over resolveKiroThinkingBudget (single source of truth).
+ */
+export function isThinkingEnabled(body, headers, model) {
+  return resolveKiroThinkingBudget(body, headers, model) !== null;
 }
 
 /**

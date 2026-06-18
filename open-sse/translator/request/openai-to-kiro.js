@@ -8,10 +8,11 @@ import { v4 as uuidv4 } from "uuid";
 import { resolveSessionId } from "../../utils/sessionManager.js";
 import {
   resolveKiroModel,
-  isThinkingEnabled,
+  resolveKiroThinkingBudget,
   buildThinkingSystemPrefix,
   KIRO_AGENTIC_SYSTEM_PROMPT,
-  resolveDefaultProfileArn
+  resolveDefaultProfileArn,
+  shouldExposeKiroReasoning
 } from "../../config/kiroConstants.js";
 import { parseDataUri } from "../concerns/image.js";
 import { DEFAULT_IMAGE_MIME } from "../schema/index.js";
@@ -167,6 +168,14 @@ function safeJSONParse(str, fallback) {
   try { return JSON.parse(str); } catch { return fallback; }
 }
 
+const MAX_KIRO_TOOL_DESCRIPTION_CHARS = 4096;
+
+function trimKiroToolDescription(description) {
+  const text = typeof description === "string" ? description : "";
+  if (text.length <= MAX_KIRO_TOOL_DESCRIPTION_CHARS) return text;
+  return `${text.slice(0, MAX_KIRO_TOOL_DESCRIPTION_CHARS)}\n[truncated for Kiro payload limit]`;
+}
+
 /**
  * Convert OpenAI messages to Kiro format
  * Rules: system/tool/user -> user role, merge consecutive same roles.
@@ -230,6 +239,7 @@ function convertMessages(messages, tools, model) {
           if (!description.trim()) {
             description = `Tool: ${name}`;
           }
+          description = trimKiroToolDescription(description);
 
           const schema = t.function?.parameters || t.parameters || t.input_schema || {};
           // Normalize schema: Kiro requires required[] and proper type/properties
@@ -525,8 +535,8 @@ export function openaiToKiroRequest(model, body, stream, credentials) {
   const temperature = body.temperature;
   const topP = body.top_p;
 
-  const { upstream: upstreamModel, agentic, thinking: modelImpliesThinking } = resolveKiroModel(model);
-  const thinkingEnabled = modelImpliesThinking || isThinkingEnabled(body, null, model);
+  const { upstream: upstreamModel, agentic } = resolveKiroModel(model);
+  const thinkingBudget = resolveKiroThinkingBudget(body, credentials?.rawHeaders, model);
 
   const { history, currentMessage } = convertMessages(messages, tools, upstreamModel);
 
@@ -549,8 +559,8 @@ export function openaiToKiroRequest(model, body, stream, credentials) {
   // Order: thinking_mode tag first (so Kiro sees it before any user text),
   // then context/timestamp marker, then optional agentic chunked-write prompt.
   const prefixParts = [];
-  if (thinkingEnabled) {
-    prefixParts.push(buildThinkingSystemPrefix());
+  if (thinkingBudget !== null) {
+    prefixParts.push(buildThinkingSystemPrefix(thinkingBudget));
   }
   prefixParts.push(`[Context: Current time is ${timestamp}]`);
   if (agentic) {
@@ -593,6 +603,14 @@ export function openaiToKiroRequest(model, body, stream, credentials) {
   // Tag payload so the executor can route the upstream model id correctly.
   Object.defineProperty(payload, "_kiroUpstreamModel", {
     value: upstreamModel,
+    enumerable: false
+  });
+  Object.defineProperty(payload, "_kiroThinkingEnabled", {
+    value: thinkingBudget !== null,
+    enumerable: false
+  });
+  Object.defineProperty(payload, "_kiroExposeReasoning", {
+    value: shouldExposeKiroReasoning(body),
     enumerable: false
   });
 
