@@ -69,6 +69,52 @@ describe("fusion combo", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("flattens tool history and strips tool choice for panel calls only", async () => {
+    const handleSingleModel = vi.fn(async () => okResponse("panel"));
+    const body = {
+      messages: [
+        { role: "user", content: "Use the tool" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "call_1", type: "function", function: { name: "lookup", arguments: '{"q":"x"}' } }
+          ]
+        },
+        { role: "tool", tool_call_id: "call_1", content: "tool output" },
+        { role: "user", content: "Now answer" }
+      ],
+      stream: true,
+      tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }],
+      tool_choice: "auto",
+    };
+
+    await handleFusionChat({
+      body,
+      models: ["p/a", "p/b"],
+      handleSingleModel,
+      log,
+      judgeModel: "p/judge",
+    });
+
+    const panelCalls = handleSingleModel.mock.calls.filter(([, model]) => model !== "p/judge");
+    expect(panelCalls).toHaveLength(2);
+    for (const [panelBody] of panelCalls) {
+      expect(panelBody.stream).toBe(false);
+      expect(panelBody.tools).toBeUndefined();
+      expect(panelBody.tool_choice).toBeUndefined();
+      expect(JSON.stringify(panelBody.messages)).not.toContain("tool_calls");
+      expect(JSON.stringify(panelBody.messages)).not.toContain('"role":"tool"');
+      expect(JSON.stringify(panelBody.messages)).toContain("[Tool call: lookup(");
+      expect(JSON.stringify(panelBody.messages)).toContain("[Tool result: tool output]");
+    }
+
+    const [judgeBody] = handleSingleModel.mock.calls.find(([, model]) => model === "p/judge");
+    expect(judgeBody.stream).toBe(true);
+    expect(judgeBody.tools).toEqual(body.tools);
+    expect(judgeBody.tool_choice).toBe("auto");
+  });
+
   it("defaults the judge to the first panel model when none is set", async () => {
     const seen = [];
     const handleSingleModel = vi.fn(async (_body, model) => { seen.push(model); return okResponse(`ans-${model}`); });
