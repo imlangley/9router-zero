@@ -76,8 +76,16 @@ export const MODEL_CAPABILITIES = {
 
 /**
  * Provider-specific capability overrides. Keyed by provider alias/id.
+ * Codex (cx) routes to chatgpt.com/backend-api/codex/responses which has a
+ * lower effective input context (~272k) than the generic GPT-5 pattern (400k).
+ * Source: openai/codex#3190 (OpenAI maintainers confirmed 272k input + 12k baseline).
  */
-export const PROVIDER_CAPABILITIES = {};
+export const PROVIDER_CAPABILITIES = {
+  cx: {
+    "gpt-5.5": { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 },
+    "gpt-5.5-review": { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 },
+  },
+};
 
 /**
  * Pattern fallback — glob (* = wildcard), matched case-insensitively and
