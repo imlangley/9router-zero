@@ -24,6 +24,7 @@ import { compressMessages, formatRtkLog } from "../rtk/index.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
+import { selectProxyForRequest, recordProxyRequestResult } from "../services/proxyRotation.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -171,12 +172,31 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log, provider, model
   });
 
-  const proxyOptions = {
-    connectionProxyEnabled: credentials?.providerSpecificData?.connectionProxyEnabled === true,
-    connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
-    connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
-    vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
-  };
+  const proxyDecision = await selectProxyForRequest({ provider, model, connectionId, credentials });
+  const proxyOptions = proxyDecision.proxyOptions;
+
+  if (proxyDecision.blocked) {
+    const message = proxyDecision.error || "Proxy policy blocked this request";
+    const proxy = recordProxyRequestResult(proxyDecision, {
+      failed: true,
+      latencyMs: Date.now() - requestStartTime,
+      statusCode: HTTP_STATUS.BAD_GATEWAY,
+      error: message,
+    });
+    trackPendingRequest(model, provider, connectionId, false, true);
+    appendRequestLog({ model, provider, connectionId, status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
+    saveRequestDetail(buildRequestDetail({
+      provider, model, connectionId,
+      latency: { ttft: 0, total: Date.now() - requestStartTime },
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+      request: extractRequestConfig(body, stream),
+      providerRequest: translatedBody || null,
+      response: { error: message, status: HTTP_STATUS.BAD_GATEWAY, thinking: null },
+      proxy,
+      status: "error"
+    })).catch(() => { });
+    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, message);
+  }
 
   if (proxyOptions.vercelRelayUrl) {
     const connectionName = credentials?.connectionName || credentials?.connectionId || "unknown";
@@ -214,6 +234,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     finalBody = result.transformedBody;
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
+    const proxy = recordProxyRequestResult(proxyDecision, {
+      failed: true,
+      latencyMs: Date.now() - requestStartTime,
+      statusCode: error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY,
+      error: error.message || String(error),
+    });
     trackPendingRequest(model, provider, connectionId, false, true);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
@@ -223,6 +249,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       request: extractRequestConfig(body, stream),
       providerRequest: translatedBody || null,
       response: { error: error.message || String(error), status: error.name === "AbortError" ? 499 : 502, thinking: null },
+      proxy,
       status: "error"
     })).catch(() => { });
 
@@ -261,6 +288,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (!providerResponse.ok) {
     trackPendingRequest(model, provider, connectionId, false, true);
     const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, executor);
+    const proxy = recordProxyRequestResult(proxyDecision, {
+      failed: true,
+      latencyMs: Date.now() - requestStartTime,
+      statusCode,
+      error: message,
+    });
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -269,6 +302,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
       response: { error: message, status: statusCode, thinking: null },
+      proxy,
       status: "error"
     })).catch(() => { });
 
@@ -278,7 +312,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, proxyDecision };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
 
