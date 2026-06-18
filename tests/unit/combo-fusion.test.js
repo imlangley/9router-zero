@@ -145,6 +145,46 @@ describe("fusion combo", () => {
     expect(judgePrompt).not.toContain("Produce ONE authoritative final answer");
   });
 
+  it("preserves client thinking config for panel and judge calls", async () => {
+    const handleSingleModel = vi.fn(async (_body, model) => {
+      if (model === "p/judge") return okResponse("FINAL");
+      return okResponse(`ans-${model}`);
+    });
+    const body = {
+      messages: [{ role: "user", content: "Think carefully" }],
+      stream: true,
+      reasoning_effort: "xhigh",
+      reasoning: { effort: "high" },
+      thinking: { type: "enabled", budget_tokens: 4096 },
+      tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }],
+      tool_choice: "auto",
+    };
+
+    await handleFusionChat({
+      body,
+      models: ["p/a", "p/b"],
+      handleSingleModel,
+      log,
+      judgeModel: "p/judge",
+    });
+
+    const panelCalls = handleSingleModel.mock.calls.filter(([, model]) => model !== "p/judge");
+    for (const [panelBody] of panelCalls) {
+      expect(panelBody.reasoning_effort).toBe("xhigh");
+      expect(panelBody.reasoning).toEqual({ effort: "high" });
+      expect(panelBody.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+      expect(panelBody.tools).toBeUndefined();
+      expect(panelBody.tool_choice).toBeUndefined();
+    }
+
+    const [judgeBody] = handleSingleModel.mock.calls.find(([, model]) => model === "p/judge");
+    expect(judgeBody.reasoning_effort).toBe("xhigh");
+    expect(judgeBody.reasoning).toEqual({ effort: "high" });
+    expect(judgeBody.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+    expect(judgeBody.tools).toEqual(body.tools);
+    expect(judgeBody.tool_choice).toBe("auto");
+  });
+
   it("defaults the judge to the first panel model when none is set", async () => {
     const seen = [];
     const handleSingleModel = vi.fn(async (_body, model) => { seen.push(model); return okResponse(`ans-${model}`); });
@@ -200,6 +240,29 @@ describe("fusion combo", () => {
       tuning: { minPanel: 2, stragglerGraceMs: 50, panelHardTimeoutMs: 5000 },
     });
     // No judge call — single answer means there is nothing to fuse.
+    const judged = handleSingleModel.mock.calls.some(([, m]) => m === "p/judge");
+    expect(judged).toBe(false);
+  });
+
+  it("does not wait for the hard timeout when one panel succeeds and the rest hang", async () => {
+    const handleSingleModel = vi.fn(async (_body, model) => {
+      if (model === "p/fast") return okResponse("lone");
+      return okResponse("slow", { delayMs: 5000 });
+    });
+
+    const t0 = Date.now();
+    const res = await handleFusionChat({
+      body: { messages: [{ role: "user", content: "Q" }] },
+      models: ["p/fast", "p/slow"],
+      handleSingleModel,
+      log,
+      judgeModel: "p/judge",
+      tuning: { minPanel: 2, stragglerGraceMs: 50, panelHardTimeoutMs: 10000 },
+    });
+    const elapsed = Date.now() - t0;
+
+    expect(elapsed).toBeLessThan(2000);
+    expect(res.ok).toBe(true);
     const judged = handleSingleModel.mock.calls.some(([, m]) => m === "p/judge");
     expect(judged).toBe(false);
   });

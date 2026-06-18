@@ -429,10 +429,11 @@ function withTimeout(promise, ms) {
 }
 
 /**
- * Collect panel responses with quorum-grace: as soon as `minPanel` calls succeed,
+ * Collect panel responses with success-grace: as soon as any panel call succeeds,
  * start a short grace timer for the rest, then proceed with whatever arrived. This
- * caps the straggler penalty (the slowest model otherwise dominates wall time) while
- * still preferring a full panel when everyone is fast. Bounded by a hard timeout.
+ * caps the straggler penalty before quorum too: one fast answer can degrade directly
+ * instead of making the client wait for a hung peer until the hard timeout. Bounded
+ * by a hard timeout when no model succeeds.
  * Returns a sparse array aligned to `calls` (undefined = not yet / dropped).
  */
 function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs }) {
@@ -458,7 +459,7 @@ function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs })
           settled++;
           if (out[i] && out[i].ok) ok++;
           if (settled === calls.length) return finish();
-          if (ok >= minPanel && !graceTimer) graceTimer = setTimeout(finish, stragglerGraceMs);
+          if (ok > 0 && !graceTimer) graceTimer = setTimeout(finish, stragglerGraceMs);
         });
     });
   });
