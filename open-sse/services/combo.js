@@ -11,6 +11,41 @@ import { extractTextContent } from "../translator/formats/gemini.js";
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
 const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
 
+function toolCallToPanelText(name, input) {
+  let argStr;
+  try {
+    argStr = typeof input === "string" ? input : JSON.stringify(input ?? {});
+  } catch {
+    argStr = "{}";
+  }
+  return `[Tool call: ${name || "unknown"}(${argStr})]`;
+}
+
+function toolResultToPanelText(content) {
+  const text = extractTextContent(content) || (typeof content === "string" ? content : String(content ?? ""));
+  return `[Tool result: ${text}]`;
+}
+
+// Flatten tool turns into prose so panel models keep the context but can't loop
+// on tools: drop the request's tools, turn tool/function results into assistant
+// text, and inline assistant tool_calls names/arguments instead of structured fields.
+function flattenToolHistory(messages) {
+  return messages
+    .filter((msg) => msg)
+    .map((msg) => {
+      if (msg.role === "tool" || msg.role === "function") {
+        return { role: "assistant", content: toolResultToPanelText(msg.content) };
+      }
+      if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+        const { tool_calls: toolCalls, ...rest } = msg;
+        const base = extractTextContent(rest.content) || (typeof rest.content === "string" ? rest.content : "");
+        const calls = toolCalls.map((call) => toolCallToPanelText(call?.function?.name || call?.name, call?.function?.arguments || call?.input));
+        return { ...rest, content: [base, ...calls].filter(Boolean).join("\n") };
+      }
+      return msg;
+    });
+}
+
 // Reorder combo models by capability fit. Stable; never drops a model (fallback intact).
 // Tier 0: satisfies all hard + all soft. Tier 1: all hard only. Tier 2: rest.
 export function reorderByCapabilities(models, required) {
@@ -468,8 +503,13 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   // 1. Fan out to the panel in parallel: non-streaming, tools stripped (we want prose).
   const { tools, tool_choice, ...rest } = body;
   const panelBody = { ...rest, stream: false };
+  if (Array.isArray(panelBody.messages)) {
+    panelBody.messages = flattenToolHistory(panelBody.messages);
+  } else if (Array.isArray(panelBody.input)) {
+    panelBody.input = flattenToolHistory(panelBody.input);
+  }
   const t0 = Date.now();
-  const calls = panel.map((m) => withTimeout(handleSingleModel(panelBody, m), cfg.panelHardTimeoutMs));
+  const calls = panel.map((m) => withTimeout(handleSingleModel(panelBody, m, true), cfg.panelHardTimeoutMs));
   const settled = await collectPanel(calls, { ...cfg, minPanel });
   log.info("FUSION", `fan-out collected in ${Date.now() - t0}ms`);
 
