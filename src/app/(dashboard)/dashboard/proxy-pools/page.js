@@ -52,7 +52,10 @@ export default function ProxyPoolsPage() {
   const [healthChecking, setHealthChecking] = useState(false);
   const [healthProgress, setHealthProgress] = useState({ current: 0, total: 0 });
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [routingDefaults, setRoutingDefaults] = useState({ runtimeProxySlowThresholdMs: 15000 });
+  const [routingDefaults, setRoutingDefaults] = useState({
+    runtimeProxyRotationEnabled: false,
+    runtimeProxySlowThresholdMs: 15000,
+  });
   const [confirmState, setConfirmState] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(PROXY_POOL_DEFAULT_PAGE_SIZE);
@@ -91,6 +94,7 @@ export default function ProxyPoolsPage() {
       const data = await res.json();
       if (res.ok) {
         setRoutingDefaults({
+          runtimeProxyRotationEnabled: data.runtimeProxyRotationEnabled === true,
           runtimeProxySlowThresholdMs: Number(data.runtimeProxySlowThresholdMs) || 15000,
         });
       }
@@ -701,7 +705,7 @@ export default function ProxyPoolsPage() {
               Proxy rotation is configured per provider from the provider page. This default threshold marks slow chat requests and connection tests.
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-[minmax(180px,220px)] sm:items-end">
+          <div className="grid gap-3 sm:grid-cols-[minmax(180px,220px)_minmax(180px,220px)] sm:items-end">
             <div>
               <label htmlFor="runtime-proxy-slow-threshold" className="mb-1 block text-xs font-medium text-text-muted">
                 Default slow threshold (ms)
@@ -715,6 +719,20 @@ export default function ProxyPoolsPage() {
                 onChange={(event) => setRoutingDefaults((prev) => ({ ...prev, runtimeProxySlowThresholdMs: Number(event.target.value) || 15000 }))}
                 onBlur={() => updateRoutingDefaults({ runtimeProxySlowThresholdMs: routingDefaults.runtimeProxySlowThresholdMs })}
               />
+            </div>
+            <div className="flex items-center gap-2">
+              <Toggle
+                id="runtime-proxy-rotation"
+                checked={routingDefaults.runtimeProxyRotationEnabled}
+                onChange={(e) => {
+                  const enabled = e.target.checked;
+                  setRoutingDefaults((prev) => ({ ...prev, runtimeProxyRotationEnabled: enabled }));
+                  updateRoutingDefaults({ runtimeProxyRotationEnabled: enabled });
+                }}
+              />
+              <label htmlFor="runtime-proxy-rotation" className="text-xs font-medium text-text-muted cursor-pointer">
+                Enable runtime proxy rotation
+              </label>
             </div>
           </div>
         </div>

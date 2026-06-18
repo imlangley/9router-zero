@@ -20,6 +20,8 @@ function getEntry(ip) {
 }
 
 export function checkLock(ip) {
+  // Skip locking for unknown IPs (null) to prevent shared bucket lockout
+  if (!ip) return { locked: false };
   const e = getEntry(ip);
   if (!e || !e.lockUntil) return { locked: false };
   const remaining = e.lockUntil - now();
@@ -28,6 +30,8 @@ export function checkLock(ip) {
 }
 
 export function recordFail(ip) {
+  // Skip recording for unknown IPs (null) to prevent shared bucket lockout
+  if (!ip) return { remainingBeforeLock: MAX_FAILS_BEFORE_LOCK };
   const e = getEntry(ip) || { fails: 0, lockUntil: 0, lockLevel: 0, lastFailAt: 0 };
   e.fails += 1;
   e.lastFailAt = now();
@@ -42,19 +46,48 @@ export function recordFail(ip) {
 }
 
 export function recordSuccess(ip) {
+  if (!ip) return;
   attempts.delete(ip);
 }
 
 export function getClientIp(request) {
   // Trusted: set from TCP socket by custom-server.js (client cannot spoof).
   const realIp = request.headers.get("x-9r-real-ip");
-  if (realIp) return realIp;
+  if (realIp) {
+    // If the real IP is a private/local address (proxy), try XFF
+    if (isPrivateIp(realIp)) {
+      const xff = request.headers.get("x-forwarded-for");
+      if (xff) {
+        const clientIp = xff.split(",")[0].trim();
+        if (clientIp && !isPrivateIp(clientIp)) return clientIp;
+      }
+    }
+    return realIp;
+  }
   // Behind a trusted reverse proxy that overwrites XFF with the real client IP.
   if (process.env.TRUST_PROXY === "true") {
     const xff = request.headers.get("x-forwarded-for");
     if (xff) return xff.split(",")[0].trim();
   }
-  // Direct exposure without custom-server: single bucket so spoofed XFF
-  // rotation cannot escape the limiter.
-  return "unknown";
+  // Direct exposure without custom-server: use XFF if available, otherwise skip locking
+  const xff = request.headers.get("x-forwarded-for");
+  if (xff) {
+    const clientIp = xff.split(",")[0].trim();
+    if (clientIp && !isPrivateIp(clientIp)) return clientIp;
+  }
+  // Return null to skip locking for unknown IPs (prevents shared bucket lockout)
+  return null;
+}
+
+function isPrivateIp(ip) {
+  if (!ip) return false;
+  const normalized = ip.replace(/^::ffff:/, "");
+  return (
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "localhost" ||
+    normalized.startsWith("10.") ||
+    normalized.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(normalized)
+  );
 }
