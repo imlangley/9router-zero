@@ -1,5 +1,5 @@
 // Locks BaseExecutor.execute retry/fallback behavior (docs 04 GAP #1, docs 11 §7).
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock the network layer so we can script upstream responses.
 const fetchMock = vi.fn();
@@ -22,6 +22,7 @@ function makeExec(config) {
 const creds = { apiKey: "k" };
 
 beforeEach(() => fetchMock.mockReset());
+afterEach(() => vi.useRealTimers());
 
 describe("BaseExecutor.execute — retry by status (config-driven)", () => {
   it("retries 502 `attempts` times then succeeds", async () => {
@@ -81,6 +82,31 @@ describe("BaseExecutor.execute — network error retry/fallback", () => {
     }
     expect(thrown?.message).toBe("boom");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("BaseExecutor.execute — streaming header timeout", () => {
+  it("uses the first-chunk budget for streaming compatible providers", async () => {
+    vi.useFakeTimers();
+    const ex = makeExec({ retry: { 502: { attempts: 0 } } });
+    const streamingCreds = {
+      ...creds,
+      providerSpecificData: { baseUrl: "https://compatible.example/v1" },
+    };
+    fetchMock.mockImplementationOnce((_url, init) => new Promise((resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      setTimeout(() => resolve(res(200)), 61_000);
+    }));
+
+    const out = ex.execute({
+      model: "m",
+      body: {},
+      stream: true,
+      credentials: streamingCreds,
+    });
+
+    await vi.advanceTimersByTimeAsync(61_000);
+    await expect(out).resolves.toMatchObject({ response: { status: 200 } });
   });
 });
 
