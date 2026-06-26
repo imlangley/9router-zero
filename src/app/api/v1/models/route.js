@@ -36,6 +36,23 @@ const LIVE_MODEL_RESOLVERS = {
     return {
       models: result.models.map((m) => ({ id: m.id, name: m.name })),
     };
+  },
+  github: async (conn) => {
+    const result = await resolveCopilotModels({
+      accessToken: conn.accessToken,
+      refreshToken: conn.refreshToken,
+      providerSpecificData: conn.providerSpecificData || {}
+    }, {
+      log: console,
+      onCredentialsRefreshed: async (refreshed) => {
+        await updateProviderCredentials(conn.id, {
+          copilotToken: refreshed.copilotToken,
+          copilotTokenExpiresAt: refreshed.copilotTokenExpiresAt,
+          existingProviderSpecificData: conn.providerSpecificData || {},
+        });
+      },
+    });
+    return result?.models?.length ? { models: result.models } : null;
   }
 };
 

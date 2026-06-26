@@ -83,6 +83,25 @@ export function fixToolUseOrdering(messages) {
 // Models that reject thinking.type "adaptive" (only Sonnet/Opus support it)
 const ADAPTIVE_THINKING_UNSUPPORTED = /haiku/i;
 
+function handlesThinkingBlocks(provider) {
+  return provider === "claude" || provider?.startsWith("anthropic-compatible") || provider === "deepseek";
+}
+
+function buildThinkingPlaceholder(provider) {
+  const block = {
+    type: CLAUDE_BLOCK.THINKING,
+    thinking: ".",
+  };
+
+  // DeepSeek's Anthropic-compatible endpoint requires a thinking block in
+  // thinking mode, but it does not need Anthropic's signed-thinking fallback.
+  if (provider !== "deepseek") {
+    block.signature = DEFAULT_THINKING_CLAUDE_SIGNATURE;
+  }
+
+  return block;
+}
+
 // Normalize a native Claude passthrough body to match Anthropic Messages API spec.
 // Newer Cowork/Claude Code clients emit beta-only shapes that OAuth endpoints reject:
 // 1. thinking.type "adaptive" → unsupported on Haiku
@@ -208,10 +227,10 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
           lastAssistantProcessed = true;
         }
 
-        // Handle thinking blocks for Anthropic endpoint only
-        if (provider === "claude" || provider?.startsWith("anthropic-compatible")) {
+        // Handle thinking blocks for Anthropic-compatible endpoints.
+        if (handlesThinkingBlocks(provider)) {
           let hasToolUse = false;
-          let hasThinking = false;
+          let hasKeptThinking = false;
 
           // Always replace signature for all thinking blocks
           for (const block of msg.content) {
@@ -223,12 +242,8 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
           }
 
           // Add thinking block if thinking enabled + has tool_use but no thinking
-          if (thinkingEnabled && !hasThinking && hasToolUse) {
-            msg.content.unshift({
-              type: CLAUDE_BLOCK.THINKING,
-              thinking: ".",
-              signature: DEFAULT_THINKING_CLAUDE_SIGNATURE
-            });
+          if (thinkingEnabled && !hasKeptThinking && hasToolUse) {
+            msg.content.unshift(buildThinkingPlaceholder(provider));
           }
         }
       }
@@ -266,4 +281,3 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
 
   return body;
 }
-

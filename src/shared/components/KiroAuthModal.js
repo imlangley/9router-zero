@@ -185,6 +185,7 @@ export default function KiroAuthModal({
       setAutoDetecting(true);
       setError(null);
       setAutoDetected(false);
+      setIdcCredentials(null);
 
       try {
         const res = await fetch("/api/oauth/kiro/auto-import");
@@ -193,6 +194,16 @@ export default function KiroAuthModal({
         if (data.found) {
           setRefreshToken(data.refreshToken);
           setAutoDetected(true);
+          // Store IDC/organization credentials if present
+          if (data.clientId && data.clientSecret) {
+            setIdcCredentials({
+              clientId: data.clientId,
+              clientSecret: data.clientSecret,
+              region: data.region,
+              authMethod: data.authMethod,
+              profileArn: data.profileArn,
+            });
+          }
         } else {
           setError(data.error || "Could not auto-detect token");
         }

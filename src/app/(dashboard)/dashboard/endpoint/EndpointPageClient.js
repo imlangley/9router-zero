@@ -4,9 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
 import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
-import { getCurrentLocale, onLocaleChange } from "@/i18n/runtime";
 import {
-  WENYAN_LOCALES,
   TUNNEL_BENEFITS,
   TUNNEL_PING_INTERVAL_MS,
   TUNNEL_PING_MAX_MS,
@@ -37,7 +35,7 @@ export default function APIPageClient({ machineId }) {
   const [cavemanLevel, setCavemanLevel] = useState("full");
   const [locale, setLocale] = useState("en");
 
-  // Cloudflare Tunnel state
+ // Cloudflare Tunnel state
   const [tunnelChecking, setTunnelChecking] = useState(true);
   const [tunnelEnabled, setTunnelEnabled] = useState(false);
   const [tunnelReachable, setTunnelReachable] = useState(false);
@@ -90,26 +88,6 @@ export default function APIPageClient({ machineId }) {
     if (typeof window !== "undefined")
       setIsRemoteHost(!["localhost", "127.0.0.1", "::1"].includes(window.location.hostname));
   }, []);
-
-  // Track app UI locale to gate wenyan caveman levels
-  useEffect(() => {
-    setLocale(getCurrentLocale());
-    return onLocaleChange(() => setLocale(getCurrentLocale()));
-  }, []);
-
-  const isWenyanLocale = WENYAN_LOCALES.includes(locale);
-  const visibleCavemanLevels = isWenyanLocale
-    ? CAVEMAN_LEVELS
-    : CAVEMAN_LEVELS.filter((lvl) => !lvl.wenyan);
-
-  // Reset wenyan level to "ultra" when leaving a Chinese locale
-  useEffect(() => {
-    const current = CAVEMAN_LEVELS.find((lvl) => lvl.id === cavemanLevel);
-    if (current?.wenyan && !isWenyanLocale) {
-      setCavemanLevel("ultra");
-      patchSetting({ cavemanLevel: "ultra" });
-    }
-  }, [isWenyanLocale, cavemanLevel]);
 
   const { copied, copy } = useCopyToClipboard();
 

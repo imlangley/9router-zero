@@ -47,6 +47,14 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
 export function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, streamController, onStreamComplete, proxyDecision }) {
   if (onRequestSuccess) onRequestSuccess();
 
+  // Warn when upstream returns unexpected Content-Type for a streaming response.
+  // This often means the provider returned an HTML error page or plain-text error
+  // that the SSE transform stream would forward as garbage to the client.
+  const upstreamContentType = (providerResponse.headers.get('content-type') || '').toLowerCase();
+  if (upstreamContentType && !upstreamContentType.includes('text/event-stream') && !upstreamContentType.includes('application/json')) {
+    console.warn('[STREAM] ' + provider + ' | ' + model + ' | unexpected Content-Type: ' + upstreamContentType);
+  }
+
   const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey });
 
   // Responses passthrough: synthesize response.failed + [DONE] if the stream aborts/stalls before a terminal event
