@@ -13,7 +13,7 @@ const proxyClientMaxBodySize = process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE
 const nextConfig = {
   distDir: process.env.NEXT_DIST_DIR || ".next",
   output: "standalone",
-  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "playwright"],
+  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite"],
   turbopack: {
     root: tracingRoot
   },
@@ -40,13 +40,12 @@ const nextConfig = {
         path: false,
       };
     }
-    // Exclude playwright from server bundle (dynamically imported at runtime)
-    if (isServer) {
-      config.externals = config.externals || [];
-      config.externals.push({ playwright: "commonjs playwright" });
-    }
-    // Exclude logs, .next, gitbook subapp from watcher
-    config.watchOptions = { ...config.watchOptions, ignored: /[\\/](logs|\.next|gitbook|cli)[\\/]/ };
+    // Exclude non-source dirs from watcher to reduce inotify load
+    config.watchOptions = {
+      ...config.watchOptions,
+      aggregateTimeout: 300,
+      ignored: /[\\/](node_modules|\.git|logs|\.next|\.next-cli-build|gitbook|cli|open-sse\.old|tests|docs)[\\/]/,
+    };
     return config;
   },
   async rewrites() {
@@ -61,6 +60,10 @@ const nextConfig = {
       },
       {
         source: "/codex/:path*",
+        destination: "/api/v1/responses"
+      },
+      {
+        source: "/responses",
         destination: "/api/v1/responses"
       },
       {
