@@ -24,6 +24,7 @@ import {
   CLINE_CONFIG,
   GITLAB_CONFIG,
   CODEBUDDY_CONFIG,
+  CODEBUDDY_CN_CONFIG,
   getOAuthClientMetadata,
 } from "./constants/oauth";
 import { XAI_CONFIG, XAI_PKCE_VERIFIER_BYTES } from "./constants/xai";
@@ -1280,6 +1281,22 @@ const PROVIDERS = {
         rawAuth: tokens.raw,
       },
     }),
+  },
+  "codebuddy-cn": {
+    config: CODEBUDDY_CN_CONFIG,
+    flowType: "device_code",
+    requestDeviceCode: async (config) => PROVIDERS.codebuddy.requestDeviceCode(config),
+    pollToken: async (config, deviceCode) => PROVIDERS.codebuddy.pollToken(config, deviceCode),
+    mapTokens: (tokens) => {
+      const mapped = PROVIDERS.codebuddy.mapTokens(tokens);
+      return {
+        ...mapped,
+        providerSpecificData: {
+          ...mapped.providerSpecificData,
+          domain: tokens.domain || CODEBUDDY_CN_CONFIG.domain,
+        },
+      };
+    },
   },
 };
 
