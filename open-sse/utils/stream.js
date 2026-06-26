@@ -100,8 +100,18 @@ export function createSSEStream(options = {}) {
 
         // Passthrough mode: normalize and forward
         if (mode === STREAM_MODE.PASSTHROUGH) {
+          if (streamDoneSent) continue;
+
           let output;
           let injectedUsage = false;
+
+          if (trimmed === "data: [DONE]" || trimmed === "data:[DONE]") {
+            output = "data: [DONE]\n\n";
+            streamDoneSent = true;
+            reqLogger?.appendConvertedChunk?.(output);
+            controller.enqueue(sharedEncoder.encode(output));
+            continue;
+          }
 
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
@@ -326,7 +336,7 @@ export function createSSEStream(options = {}) {
         if (remaining) buffer += remaining;
 
         if (mode === STREAM_MODE.PASSTHROUGH) {
-          if (buffer) {
+          if (!streamDoneSent && buffer) {
             let output = buffer;
             if (buffer.startsWith("data:") && !buffer.startsWith("data: ")) {
               output = "data: " + buffer.slice(5);

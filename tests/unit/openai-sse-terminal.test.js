@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FORMATS } from "../../open-sse/translator/formats.js";
-import { createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.js";
+import { createPassthroughStreamWithLogger, createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -51,5 +51,26 @@ describe("OpenAI-compatible translated SSE terminal framing", () => {
     expect(out).toContain('"content":"Hello"');
     expect(out).toContain('"finish_reason":"stop"');
     expect(out).not.toContain("data: [DONE]");
+  });
+});
+
+describe("OpenAI-compatible passthrough SSE terminal framing", () => {
+  it("does not forward chunks after upstream [DONE]", async () => {
+    const upstream = [
+      'data: {"model":"claude-opus-4-8","choices":[{"index":0,"delta":{"content":"Hey."}}],"object":"chat.completion.chunk","created":1782467929}\n\n',
+      "data: [DONE]\n\n",
+      'data: {"model":"claude-opus-4-8","choices":[{"index":0,"delta":{"content":"late"}}],"object":"chat.completion.chunk","created":1782467929}\n\n',
+    ].join("");
+
+    const out = await drain(
+      streamFromText(upstream).pipeThrough(
+        createPassthroughStreamWithLogger("test"),
+      ),
+    );
+
+    expect(out).toContain('"content":"Hey."');
+    expect(out).not.toContain("late");
+    expect(out.match(/data: \[DONE\]/g)).toHaveLength(1);
+    expect(out.trim().endsWith("data: [DONE]")).toBe(true);
   });
 });
