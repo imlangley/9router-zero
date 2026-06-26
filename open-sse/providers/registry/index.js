@@ -17,6 +17,7 @@ import p14 from "./claude.js";
 import p15 from "./cline.js";
 import p16 from "./cloudflare-ai.js";
 import p17 from "./codebuddy.js";
+import p94 from "./codebuddy-cn.js";
 import p18 from "./codex.js";
 import p19 from "./cohere.js";
 import p20 from "./comfyui.js";
@@ -188,5 +189,6 @@ export default [
   p90,
   p91,
   p92,
-  p93
+  p93,
+  p94
 ];
