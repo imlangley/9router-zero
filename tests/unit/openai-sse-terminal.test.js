@@ -55,7 +55,7 @@ describe("OpenAI-compatible translated SSE terminal framing", () => {
 });
 
 describe("OpenAI-compatible passthrough SSE terminal framing", () => {
-  it("does not forward chunks after upstream [DONE]", async () => {
+  it("moves upstream [DONE] after late custom-provider chunks", async () => {
     const upstream = [
       'data: {"model":"claude-opus-4-8","choices":[{"index":0,"delta":{"content":"Hey."}}],"object":"chat.completion.chunk","created":1782467929}\n\n',
       "data: [DONE]\n\n",
@@ -69,7 +69,7 @@ describe("OpenAI-compatible passthrough SSE terminal framing", () => {
     );
 
     expect(out).toContain('"content":"Hey."');
-    expect(out).not.toContain("late");
+    expect(out).toContain('"content":"late"');
     expect(out.match(/data: \[DONE\]/g)).toHaveLength(1);
     expect(out.trim().endsWith("data: [DONE]")).toBe(true);
   });
