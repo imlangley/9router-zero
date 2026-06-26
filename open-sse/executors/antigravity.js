@@ -17,8 +17,39 @@ function sanitizeFunctionName(name) {
 
 const MAX_RETRY_AFTER_MS = 10000;
 const MAX_ANTIGRAVITY_OUTPUT_TOKENS = 16384;
-// Fields Google generateContent rejects (e.g. Claude adaptive output_config) — stripped from antigravity request envelope
-const ANTIGRAVITY_REQUEST_BLACKLIST = ["output_config"];
+const ANTIGRAVITY_REQUEST_BLACKLIST = [
+  "output_config",
+  "thinking",
+  "reasoning_effort",
+  "reasoning",
+  "enable_thinking",
+  "thinking_budget",
+  "thinkingConfig",
+];
+
+const IMAGE_MODEL_PATTERNS = [/image/i, /imagen/i, /image-generation/i];
+
+function isImageModel(model) {
+  if (!model) return false;
+  return IMAGE_MODEL_PATTERNS.some((pattern) => pattern.test(model));
+}
+
+function parseImageConfig(model) {
+  const config = { aspectRatio: "1:1" };
+  const resMatch = model.match(/(\d+)x(\d+)$/);
+  if (resMatch) {
+    const width = parseInt(resMatch[1], 10);
+    const height = parseInt(resMatch[2], 10);
+    if (width <= 16 && height <= 16) {
+      config.aspectRatio = `${width}:${height}`;
+    } else {
+      const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+      const divisor = gcd(width, height);
+      config.aspectRatio = `${width / divisor}:${height / divisor}`;
+    }
+  }
+  return config;
+}
 
 export class AntigravityExecutor extends BaseExecutor {
   constructor() {
@@ -28,7 +59,7 @@ export class AntigravityExecutor extends BaseExecutor {
   buildUrl(model, stream, urlIndex = 0) {
     const baseUrls = this.getBaseUrls();
     const baseUrl = baseUrls[urlIndex] || baseUrls[0];
-    const action = stream ? "streamGenerateContent?alt=sse" : "generateContent";
+    const action = stream && !isImageModel(model) ? "streamGenerateContent?alt=sse" : "generateContent";
     return `${baseUrl}/v1internal:${action}`;
   }
 
@@ -48,6 +79,50 @@ export class AntigravityExecutor extends BaseExecutor {
 
   transformRequest(model, body, stream, credentials) {
     const projectId = credentials?.projectId || this.generateProjectId();
+
+    if (isImageModel(model)) {
+      const imageConfig = parseImageConfig(model);
+      const cleanModel = model.replace(/-(\d+)x(\d+)$/, "");
+      const sourceContents = body.request?.contents || body.contents || [];
+      const contents = [];
+
+      for (const content of sourceContents) {
+        const textParts = (content.parts || [])
+          .filter((part) => part.text !== undefined)
+          .map((part) => ({ text: part.text }));
+        if (textParts.length > 0) {
+          contents.push({ role: content.role || "user", parts: textParts });
+        }
+      }
+
+      const sessionId = resolveSessionId({
+        headers: credentials?.rawHeaders,
+        body,
+        connectionId: credentials?.email || credentials?.connectionId,
+        scope: "antigravity",
+      });
+
+      this._lastSessionId = sessionId;
+
+      return {
+        project: projectId,
+        model: cleanModel,
+        userAgent: "antigravity",
+        requestType: "image_gen",
+        requestId: `agent-${crypto.randomUUID()}`,
+        request: {
+          contents,
+          generationConfig: {
+            temperature: 1.0,
+            topP: 0.95,
+            topK: 40,
+            maxOutputTokens: 8192,
+            imageConfig,
+          },
+          sessionId,
+        },
+      };
+    }
 
     // Fix contents for Claude models via Antigravity
     const contents = body.request?.contents?.map(c => {
