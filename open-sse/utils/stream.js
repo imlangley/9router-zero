@@ -100,6 +100,8 @@ export function createSSEStream(options = {}) {
 
         // Passthrough mode: normalize and forward
         if (mode === STREAM_MODE.PASSTHROUGH) {
+          if (!trimmed) continue;
+
           let output;
           let injectedUsage = false;
 
@@ -159,16 +161,16 @@ export function createSSEStream(options = {}) {
               if (isFinishChunk && !hasValidUsage(parsed.usage)) {
                 const estimated = estimateUsage(body, totalContentLength, FORMATS.OPENAI);
                 parsed.usage = filterUsageForFormat(estimated, FORMATS.OPENAI);
-                output = `data: ${JSON.stringify(parsed)}\n`;
+                output = `data: ${JSON.stringify(parsed)}\n\n`;
                 usage = estimated;
                 injectedUsage = true;
               } else if (isFinishChunk && usage) {
                 const buffered = addBufferToUsage(usage);
                 parsed.usage = filterUsageForFormat(buffered, FORMATS.OPENAI);
-                output = `data: ${JSON.stringify(parsed)}\n`;
+                output = `data: ${JSON.stringify(parsed)}\n\n`;
                 injectedUsage = true;
               } else if (idFixed || fieldsInjected) {
-                output = `data: ${JSON.stringify(parsed)}\n`;
+                output = `data: ${JSON.stringify(parsed)}\n\n`;
                 injectedUsage = true;
               }
             } catch {
@@ -178,7 +180,9 @@ export function createSSEStream(options = {}) {
 
           if (!injectedUsage) {
             if (line.startsWith("data:") && !line.startsWith("data: ")) {
-              output = "data: " + line.slice(5) + "\n";
+              output = "data: " + line.slice(5).trimStart() + "\n\n";
+            } else if (line.startsWith("data: ")) {
+              output = line.trimEnd() + "\n\n";
             } else {
               output = line + "\n";
             }
@@ -333,7 +337,10 @@ export function createSSEStream(options = {}) {
           if (buffer) {
             let output = buffer;
             if (buffer.startsWith("data:") && !buffer.startsWith("data: ")) {
-              output = "data: " + buffer.slice(5);
+              output = "data: " + buffer.slice(5).trimStart();
+            }
+            if (output.startsWith("data:")) {
+              output = output.trimEnd() + "\n\n";
             }
             reqLogger?.appendConvertedChunk?.(output);
             controller.enqueue(sharedEncoder.encode(output));

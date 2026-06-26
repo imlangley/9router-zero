@@ -72,5 +72,7 @@ describe("OpenAI-compatible passthrough SSE terminal framing", () => {
     expect(out).toContain('"content":"late"');
     expect(out.match(/data: \[DONE\]/g)).toHaveLength(1);
     expect(out.trim().endsWith("data: [DONE]")).toBe(true);
+    expect(out).not.toContain('1782467929}\ndata: [DONE]');
+    expect(out).toContain('1782467929}\n\ndata: [DONE]');
   });
 });
