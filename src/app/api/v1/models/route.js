@@ -9,7 +9,9 @@ import { getProviderConnections, getCombos, getCustomModels, getModelAliases } f
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
+import { resolveCopilotModels } from "open-sse/services/copilotModels.js";
 import { buildCodexGatewayModelEntries } from "@/sse/services/codexGateway.js";
+import { updateProviderCredentials } from "@/sse/services/tokenRefresh.js";
 import { capabilitiesFromServiceKind } from "open-sse/providers/capabilities.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
