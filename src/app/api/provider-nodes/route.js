@@ -17,6 +17,16 @@ const CUSTOM_EMBEDDING_DEFAULTS = {
   baseUrl: "https://api.openai.com/v1",
 };
 
+function sanitizeOpenAICompatibleBaseUrl(baseUrl) {
+  let sanitizedBaseUrl = baseUrl.trim().replace(/\/$/, "");
+  if (sanitizedBaseUrl.endsWith("/chat/completions")) {
+    sanitizedBaseUrl = sanitizedBaseUrl.slice(0, -"/chat/completions".length);
+  } else if (sanitizedBaseUrl.endsWith("/responses")) {
+    sanitizedBaseUrl = sanitizedBaseUrl.slice(0, -"/responses".length);
+  }
+  return sanitizedBaseUrl;
+}
+
 // GET /api/provider-nodes - List all provider nodes
 export async function GET() {
   try {
@@ -55,7 +65,7 @@ export async function POST(request) {
         type: "openai-compatible",
         prefix: prefix.trim(),
         apiType,
-        baseUrl: (baseUrl || OPENAI_COMPATIBLE_DEFAULTS.baseUrl).trim(),
+        baseUrl: sanitizeOpenAICompatibleBaseUrl(baseUrl || OPENAI_COMPATIBLE_DEFAULTS.baseUrl),
         name: name.trim(),
       });
       return NextResponse.json({ node }, { status: 201 });

@@ -38,6 +38,33 @@ async function setupTestContext(nodeData) {
   };
 }
 
+async function setupProviderNodeRouteTestContext() {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "9router-provider-node-route-"));
+  process.env.DATA_DIR = tempDir;
+  vi.resetModules();
+  vi.doMock("next/server", () => ({
+    NextResponse: {
+      json(body, init = {}) {
+        return new Response(JSON.stringify(body), {
+          status: init.status || 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    },
+  }));
+
+  const { POST } = await import("@/app/api/provider-nodes/route.js");
+  const { getProviderNodeById } = await import("@/models/index.js");
+
+  return {
+    POST,
+    getProviderNodeById,
+    cleanup() {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    },
+  };
+}
+
 function makeRequest(provider) {
   return new Request("https://9router.local/api/providers", {
     method: "POST",
@@ -166,5 +193,29 @@ describe("compatible provider connections API", () => {
     expect(secondBody.error).toContain("Only one connection is allowed");
     expect(storedConnections).toHaveLength(1);
     expectCompatibleConnection(storedConnections[0], ctx.node, { apiType: "chat" });
+  });
+
+  it("normalizes OpenAI-compatible full endpoint URLs on create", async () => {
+    const ctx = await setupProviderNodeRouteTestContext();
+    cleanup = ctx.cleanup;
+
+    const createResponse = await ctx.POST(new Request("https://9router.local/api/provider-nodes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Endpoint Paste Node",
+        prefix: "ep",
+        apiType: "chat",
+        type: "openai-compatible",
+        baseUrl: "https://compatible.test/api/v1/chat/completions",
+      }),
+    }));
+    const created = await createResponse.json();
+
+    expect(createResponse.status).toBe(201);
+    expect(created.node.baseUrl).toBe("https://compatible.test/api/v1");
+    const storedNode = await ctx.getProviderNodeById(created.node.id);
+
+    expect(storedNode.baseUrl).toBe("https://compatible.test/api/v1");
   });
 });
