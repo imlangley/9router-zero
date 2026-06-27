@@ -4,6 +4,7 @@ import { useState } from "react";
 import PropTypes from "prop-types";
 import { Button, Badge, Input, Modal, Select } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
+import { createBulkConnectionNameAllocator } from "./bulkConnectionNames";
 
 const BULK_PLACEHOLDER = `name1|sk-key1\nname2|sk-key2\nsk-key-only-auto-named`;
 
@@ -13,6 +14,8 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const isCookie = authType === "cookie";
   const isXaiApiKey = provider === "xai" && !isCookie;
   const credentialLabel = isCookie ? "Cookie Value" : "API Key";
+  const bulkTextareaId = "bulk-api-keys";
+  const bulkHelpId = "bulk-api-keys-help";
   const credentialPlaceholder = isCookie
     ? (provider === "grok-web" ? "sso=xxxxx... or just the raw value" : "eyJhbGciOi...")
     : (isXaiApiKey ? "xai-..." : "");
@@ -129,23 +132,43 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const handleBulkSubmit = async () => {
     const lines = bulkText.split("\n").map(l => l.trim()).filter(Boolean);
     if (!lines.length) return;
+    if (isCompatible && !formData.defaultModel.trim()) return;
     setSaving(true);
     setBulkResult(null);
     let success = 0;
     let failed = 0;
+    const allocateName = createBulkConnectionNameAllocator();
+    const basePriority = Number(formData.priority) || 1;
+    let nextPriority = basePriority;
     for (let i = 0; i < lines.length; i++) {
       const parts = lines[i].split("|");
       const apiKey = parts.length >= 2 ? parts.slice(1).join("|").trim() : parts[0].trim();
-      const baseName = parts.length >= 2 ? parts[0].trim() : "Key";
-      const name = `${baseName} ${i + 1}`;
+      if (!apiKey) {
+        failed++;
+        continue;
+      }
+      const explicitName = parts.length >= 2 ? parts[0].trim() : "";
+      const name = allocateName(explicitName);
+      const priority = nextPriority;
       try {
         const res = await fetch("/api/providers", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider, apiKey, name, priority: 1, testStatus: "unknown" }),
+          body: JSON.stringify({
+            provider,
+            apiKey,
+            name,
+            defaultModel: isCompatible ? formData.defaultModel.trim() : undefined,
+            priority,
+            proxyPoolId: formData.proxyPoolId === NONE_PROXY_POOL_VALUE ? null : formData.proxyPoolId,
+            testStatus: "unknown",
+            providerSpecificData: buildProviderSpecificData(),
+          }),
         });
-        if (res.ok) success++;
-        else failed++;
+        if (res.ok) {
+          success++;
+          nextPriority += 1;
+        } else failed++;
       } catch {
         failed++;
       }
@@ -168,8 +191,19 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
         {mode === "bulk" && (
           <div className="flex flex-col gap-3">
-            <p className="text-xs text-text-muted">One key per line. Format: <code>name|apiKey</code> or just <code>apiKey</code> (auto-named by index).</p>
+            {isCompatible && (
+              <Input
+                label="Default Model"
+                value={formData.defaultModel}
+                onChange={(e) => setFormData({ ...formData, defaultModel: e.target.value })}
+                placeholder={isAnthropic ? "claude-3-5-sonnet-latest" : "gpt-4o-mini"}
+              />
+            )}
+            <label htmlFor={bulkTextareaId} className="text-sm font-medium text-text-primary">API Keys</label>
+            <p id={bulkHelpId} className="text-xs text-text-muted">One key per line. Format: <code>name|apiKey</code> or just <code>apiKey</code> (auto-named by index).</p>
             <textarea
+              id={bulkTextareaId}
+              aria-describedby={bulkHelpId}
               className="w-full rounded border border-accent/30 bg-sidebar p-2 text-sm font-mono resize-y min-h-[140px] focus:outline-none focus:ring-1 focus:ring-primary"
               placeholder={BULK_PLACEHOLDER}
               value={bulkText}
@@ -181,7 +215,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
               </div>
             )}
             <div className="flex gap-2">
-              <Button onClick={handleBulkSubmit} fullWidth disabled={saving || !bulkText.trim()}>
+              <Button onClick={handleBulkSubmit} fullWidth disabled={saving || !bulkText.trim() || (isCompatible && !formData.defaultModel.trim())}>
                 {saving ? "Adding..." : "Add All Keys"}
               </Button>
               <Button onClick={onClose} variant="ghost" fullWidth>Cancel</Button>
