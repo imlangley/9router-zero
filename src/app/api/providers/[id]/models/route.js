@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById } from "@/models";
-import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+import { AI_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+import { PROVIDER_MODELS } from "open-sse/config/providerModels.js";
 import { GEMINI_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
+import { FILTERS } from "../../suggested-models/filters.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
@@ -57,6 +59,49 @@ const appendCodexReviewModels = (models) => models.flatMap((model) => {
 });
 
 const parseCodexModels = (data) => appendCodexReviewModels(parseOpenAIStyleModels(data));
+
+const getStaticProviderModels = (providerId) => {
+  const provider = AI_PROVIDERS[providerId];
+  return PROVIDER_MODELS[provider?.alias] || PROVIDER_MODELS[providerId] || [];
+};
+
+const resolveModelsFromFetcher = async (providerId) => {
+  const fetcher = AI_PROVIDERS[providerId]?.modelsFetcher;
+  if (!fetcher?.url) return null;
+
+  try {
+    const response = await fetch(fetcher.url);
+    if (!response.ok) return null;
+    const data = await response.json();
+    const models = parseOpenAIStyleModels(data);
+    const filter = FILTERS[fetcher.type];
+    return filter ? filter(models) : models;
+  } catch (error) {
+    console.log(`Failed to fetch models from ${providerId} modelsFetcher:`, error);
+    return null;
+  }
+};
+
+const buildModelsResponse = (connection, models, warning) => NextResponse.json({
+  provider: connection.provider,
+  connectionId: connection.id,
+  models,
+  ...(warning ? { warning } : {})
+});
+
+const resolveFallbackModelsResponse = async (connection, warning) => {
+  const fetchedModels = await resolveModelsFromFetcher(connection.provider);
+  if (fetchedModels?.length) {
+    return buildModelsResponse(connection, fetchedModels, warning);
+  }
+
+  const staticModels = getStaticProviderModels(connection.provider);
+  if (staticModels.length) {
+    return buildModelsResponse(connection, staticModels, warning);
+  }
+
+  return null;
+};
 
 const createOpenAIModelsConfig = (url) => ({
   url,
@@ -364,7 +409,8 @@ const PROVIDER_MODELS_CONFIG = {
 /**
  * GET /api/providers/[id]/models - Get models list from provider
  */
-export async function GET(request, { params }) {
+export async function GET(_request, { params }) {
+  void _request;
   try {
     const { id } = await params;
     const connection = await getProviderConnectionById(id);
@@ -449,6 +495,9 @@ export async function GET(request, { params }) {
 
     const config = PROVIDER_MODELS_CONFIG[connection.provider];
     if (!config) {
+      const fallbackResponse = await resolveFallbackModelsResponse(connection);
+      if (fallbackResponse) return fallbackResponse;
+
       return NextResponse.json(
         { error: `Provider ${connection.provider} does not support models listing` },
         { status: 400 }
@@ -460,6 +509,10 @@ export async function GET(request, { params }) {
       const result = await config.customResolver(connection);
       if (result.error) {
         return NextResponse.json({ error: result.error }, { status: result.status || 500 });
+      }
+      if (!result.models?.length) {
+        const fallbackResponse = await resolveFallbackModelsResponse(connection, result.warning);
+        if (fallbackResponse) return fallbackResponse;
       }
       return NextResponse.json({
         provider: connection.provider,
@@ -505,6 +558,12 @@ export async function GET(request, { params }) {
     if (!response.ok) {
       const errorText = await response.text();
       console.log(`Error fetching models from ${connection.provider}:`, errorText);
+      const fallbackResponse = await resolveFallbackModelsResponse(
+        connection,
+        `Failed to fetch models: ${response.status}`
+      );
+      if (fallbackResponse) return fallbackResponse;
+
       return NextResponse.json(
         { error: `Failed to fetch models: ${response.status}` },
         { status: response.status }
@@ -513,6 +572,11 @@ export async function GET(request, { params }) {
 
     const data = await response.json();
     const models = config.parseResponse(data);
+
+    if (!models.length) {
+      const fallbackResponse = await resolveFallbackModelsResponse(connection);
+      if (fallbackResponse) return fallbackResponse;
+    }
 
     return NextResponse.json({
       provider: connection.provider,
