@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
 import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
 
+function sanitizeOpenAICompatibleBaseUrl(baseUrl) {
+  let sanitizedBaseUrl = baseUrl.trim().replace(/\/$/, "");
+  if (sanitizedBaseUrl.endsWith("/chat/completions")) {
+    sanitizedBaseUrl = sanitizedBaseUrl.slice(0, -"/chat/completions".length);
+  } else if (sanitizedBaseUrl.endsWith("/responses")) {
+    sanitizedBaseUrl = sanitizedBaseUrl.slice(0, -"/responses".length);
+  }
+  return sanitizedBaseUrl;
+}
+
 // PUT /api/provider-nodes/[id] - Update provider node
 export async function PUT(request, { params }) {
   try {
@@ -31,7 +41,11 @@ export async function PUT(request, { params }) {
     }
 
     let sanitizedBaseUrl = baseUrl.trim();
-    
+
+    if (node.type === "openai-compatible") {
+      sanitizedBaseUrl = sanitizeOpenAICompatibleBaseUrl(sanitizedBaseUrl);
+    }
+
     // Sanitize Base URL for Anthropic Compatible
     if (node.type === "anthropic-compatible") {
       sanitizedBaseUrl = sanitizedBaseUrl.replace(/\/$/, "");

@@ -54,10 +54,12 @@ async function setupProviderNodeRouteTestContext() {
   }));
 
   const { POST } = await import("@/app/api/provider-nodes/route.js");
+  const { PUT } = await import("@/app/api/provider-nodes/[id]/route.js");
   const { getProviderNodeById } = await import("@/models/index.js");
 
   return {
     POST,
+    PUT,
     getProviderNodeById,
     cleanup() {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -217,5 +219,20 @@ describe("compatible provider connections API", () => {
     const storedNode = await ctx.getProviderNodeById(created.node.id);
 
     expect(storedNode.baseUrl).toBe("https://compatible.test/api/v1");
+
+    const updateResponse = await ctx.PUT(new Request("https://9router.local/api/provider-nodes/test", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Endpoint Paste Node",
+        prefix: "ep",
+        apiType: "responses",
+        baseUrl: "https://compatible.test/api/v1/responses",
+      }),
+    }), { params: Promise.resolve({ id: created.node.id }) });
+    const updated = await updateResponse.json();
+
+    expect(updateResponse.status).toBe(200);
+    expect(updated.node.baseUrl).toBe("https://compatible.test/api/v1");
   });
 });
