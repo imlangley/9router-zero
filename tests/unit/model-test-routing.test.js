@@ -165,7 +165,7 @@ describe("model test route kind routing", () => {
     );
   });
 
-  it("uses a minimal chat completion body for LLM model tests", async () => {
+  it("uses a minimal non-streaming chat completion probe for LLM model tests", async () => {
     global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
     }), {
@@ -187,6 +187,7 @@ describe("model test route kind routing", () => {
     const body = await res.json();
     const [, init] = global.fetch.mock.calls[0];
     const pingBody = JSON.parse(init.body);
+    const pingHeaders = init.headers;
 
     expect(body.ok).toBe(true);
     expect(global.fetch).toHaveBeenCalledWith(
@@ -196,6 +197,10 @@ describe("model test route kind routing", () => {
     expect(pingBody).toEqual({
       model: "custom/gemini-3-pro",
       messages: [{ role: "user", content: "hi" }],
+    });
+    expect(pingHeaders).toMatchObject({
+      Accept: "application/json",
+      "Content-Type": "application/json",
     });
   });
 
