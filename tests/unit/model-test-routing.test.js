@@ -165,6 +165,40 @@ describe("model test route kind routing", () => {
     );
   });
 
+  it("uses a minimal chat completion body for LLM model tests", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    const { POST } = await import("../../src/app/api/models/test/route.js");
+
+    const req = new Request("http://localhost/api/models/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "custom/gemini-3-pro",
+      }),
+    });
+
+    const res = await POST(req);
+    const body = await res.json();
+    const [, init] = global.fetch.mock.calls[0];
+    const pingBody = JSON.parse(init.body);
+
+    expect(body.ok).toBe(true);
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/chat/completions"),
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(pingBody).toEqual({
+      model: "custom/gemini-3-pro",
+      messages: [{ role: "user", content: "hi" }],
+    });
+  });
+
   it("returns formatted HTTP errors for non-2xx embedding responses", async () => {
     global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       error: { message: "bad upstream" },
