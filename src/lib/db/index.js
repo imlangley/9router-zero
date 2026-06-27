@@ -14,6 +14,10 @@ export {
   deleteProviderConnection, deleteProviderConnectionsByProvider,
   reorderProviderConnections, cleanupProviderConnections,
 } from "./repos/connectionsRepo.js";
+export {
+  createCompatibleProviderConnection,
+  createCustomEmbeddingProviderConnection,
+} from "./repos/compatibleConnectionsRepo.js";
 
 // Provider nodes
 export {

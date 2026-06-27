@@ -3,6 +3,8 @@ export {
   getProviderConnections,
   getProviderConnectionById,
   createProviderConnection,
+  createCompatibleProviderConnection,
+  createCustomEmbeddingProviderConnection,
   updateProviderConnection,
   deleteProviderConnection,
   getProviderNodes,
