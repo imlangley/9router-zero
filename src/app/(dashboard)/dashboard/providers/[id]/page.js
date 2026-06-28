@@ -662,6 +662,10 @@ export default function ProviderDetailPage() {
     setOneByOneStopping(true);
   };
 
+  const canFetchProviderModels = !isCompatible
+    && connections.some((conn) => conn.isActive !== false)
+    && (FETCH_MODELS_PROVIDERS.has(providerId) || !!providerInfo?.modelsFetcher);
+
   const handleDelete = async (id) => {
     setConfirmState({
       title: "Delete Connection",
@@ -1216,7 +1220,7 @@ export default function ProviderDetailPage() {
         </button>
 
         {/* Fetch models from provider API — show for providers that support dynamic model listing */}
-        {FETCH_MODELS_PROVIDERS.has(providerId) && connections.some((conn) => conn.isActive !== false) && (
+        {canFetchProviderModels && (
           <button
             type="button"
             onClick={handleFetchModels}
